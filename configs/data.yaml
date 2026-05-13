@@ -1,0 +1,15 @@
+paths:
+  raw_data_path: "DaneLBBB&RBBB/DaneMed(in).csv"
+  preprocessed_data_path: "DaneLBBB&RBBB/DaneMed_processed.pkl"
+  category_reduced_data_path: "DaneLBBB&RBBB/DaneMed_category_reduced.pkl"
+  discretized_data_path: "DaneLBBB&RBBB/DaneMed_discretized.pkl"
+  split_indices_path: "DaneLBBB&RBBB/train_valid_test_split_indices.pkl"
+  crossval_indices_path: "DaneLBBB&RBBB/crossval_indices.pkl"
+columns:
+  id: "Id"
+  target: "zgon_binary"
+preprocessing:
+  split:
+    train: 0.7
+    valid: 0.15
+    test: 0.15
