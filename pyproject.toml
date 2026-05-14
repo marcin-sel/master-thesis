@@ -19,7 +19,7 @@ dependencies = [
     "dotenv (>=0.9.9,<0.10.0)",
     "plotly (>=6.7.0,<7.0.0)",
     "nbformat (>=5.10.4,<6.0.0)",
-    "torch (>=2.11.0,<3.0.0)",
+    "torch (>=2.5.1,<2.6.0)",
     "torch-geometric (>=2.7.0,<3.0.0)",
     "pgmpy (>=1.1.2,<2.0.0)",
     "networkx (>=3.6.1,<4.0.0)",
@@ -29,6 +29,14 @@ dependencies = [
 
 [tool.poetry]
 packages = [{include = "my_project", from = "src"}]
+
+[tool.poetry.dependencies]
+torch = { version = ">=2.5.1,<2.6.0", source = "pytorch-cu121" }
+
+[[tool.poetry.source]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+priority = "explicit"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
