@@ -55,7 +55,8 @@ preprocessor_transformer = ColumnTransformer(
             selector(dtype_include=dtypes_dict["categorical"]),
         ),
         ("bool", boolean_pipeline, selector(dtype_include=dtypes_dict["boolean"])),
-    ]
+    ],
+    verbose_feature_names_out=False,
 )
 
 ordinal_start_from_1_encoder = Pipeline(
