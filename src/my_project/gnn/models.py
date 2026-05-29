@@ -27,46 +27,44 @@ class EncodeX(nn.Module):
         self,
         n_nodes,
         emb_dim=8,
-        categorical_features_indices=None,
-        numeric_features_indices=None,
-        categorical_features_indices_n_classes=None,
         num_emb_hidden=8,
+        categorical_features_indexes=None,
+        numeric_features_indexes=None,
+        categorical_features_n_classes=None,
     ):
         super().__init__()
 
         self.n_nodes = n_nodes
         self.emb_dim = emb_dim
-        self.categorical_features_indices_n_classes = (
-            categorical_features_indices_n_classes or {}
-        )
-        self.categorical_features_indices = categorical_features_indices or []
-        if numeric_features_indices is not None:
-            self.numeric_features_indices = numeric_features_indices
+        self.categorical_features_n_classes = categorical_features_n_classes or {}
+        self.categorical_features_indexes = categorical_features_indexes or []
+        if numeric_features_indexes is not None:
+            self.numeric_features_indexes = numeric_features_indexes
         else:
-            self.numeric_features_indices = list(
-                set(range(n_nodes)) - set(self.categorical_features_indices)
+            self.numeric_features_indexes = list(
+                set(range(n_nodes)) - set(self.categorical_features_indexes)
             )
 
-        self.categorical_features_indices_map = {
-            idx: i for i, idx in enumerate(self.categorical_features_indices)
+        self.categorical_features_indexes_map = {
+            idx: i for i, idx in enumerate(self.categorical_features_indexes)
         }
-        self.numeric_features_indices_map = {
-            idx: i for i, idx in enumerate(self.numeric_features_indices)
+        self.numeric_features_indexes_map = {
+            idx: i for i, idx in enumerate(self.numeric_features_indexes)
         }
 
         self.value_embeddings = nn.ModuleDict(
             {
                 str(idx): nn.Embedding(
-                    self.categorical_features_indices_n_classes[idx] + 1, emb_dim
+                    self.categorical_features_n_classes[idx] + 1, emb_dim
                 )
-                for idx in self.categorical_features_indices
+                for idx in self.categorical_features_indexes
             }
         )
 
         self.num_embeddings = nn.ModuleDict(
             {
                 str(idx): NumericEncoder(1, num_emb_hidden, emb_dim)
-                for idx in self.numeric_features_indices
+                for idx in self.numeric_features_indexes
             }
         )
 
@@ -91,14 +89,14 @@ class EncodeX(nn.Module):
         raw_value_2d = raw_value.view(batch_size, self.n_nodes)
         x_2d = x.view(batch_size, self.n_nodes, self.emb_dim)
 
-        for node_idx in self.categorical_features_indices:
+        for node_idx in self.categorical_features_indexes:
             vocab_size = self.value_embeddings[str(node_idx)].num_embeddings
             node_values = raw_value_2d[:, node_idx].long().clamp(0, vocab_size - 1)
             x_2d[:, node_idx, :] = self.value_embeddings[str(node_idx)](node_values).to(
                 dtype=x.dtype
             )
 
-        for node_idx in self.numeric_features_indices:
+        for node_idx in self.numeric_features_indexes:
             node_values = raw_value_2d[:, node_idx].unsqueeze(1)
             x_2d[:, node_idx, :] = self.num_embeddings[str(node_idx)](node_values).to(
                 dtype=x.dtype
@@ -166,8 +164,8 @@ class GNN(nn.Module):
         emb_dim=8,
         hidden_dim=[8],
         dropout=0.3,
-        categorical_features_indices=[],
-        categorical_features_indices_n_classes=dict(),
+        categorical_features_indexes=[],
+        categorical_features_n_classes=dict(),
         add_skip=False,
         conv_layer: Literal["GraphConv", "SAGEConv", "GATConv"] = "GraphConv",
     ):
@@ -177,10 +175,8 @@ class GNN(nn.Module):
         self.hidden_dim = hidden_dim
         self.emb_dim = emb_dim
         self.dropout = dropout
-        self.categorical_features_indices_n_classes = (
-            categorical_features_indices_n_classes
-        )
-        self.categorical_features_indices = categorical_features_indices
+        self.categorical_features_n_classes = categorical_features_n_classes
+        self.categorical_features_indexes = categorical_features_indexes
 
         if conv_layer == "GraphConv":
             conv_layer = GraphConv
@@ -216,9 +212,9 @@ class MyGNN(nn.Module):
         emb_dim=8,
         conv_hidden_dim=[8],
         dropout=0.3,
-        categorical_features_indices=[],
-        numeric_features_indices=None,
-        categorical_features_indices_n_classes=dict(),
+        categorical_features_indexes=[],
+        numeric_features_indexes=None,
+        categorical_features_n_classes=dict(),
         num_emb_hidden=None,
         add_skip=False,
         conv_layer: Literal["GraphConv", "SAGEConv", "GATConv"] = "GraphConv",
@@ -228,9 +224,9 @@ class MyGNN(nn.Module):
         self.encode_x = EncodeX(
             n_nodes=n_nodes,
             emb_dim=emb_dim,
-            categorical_features_indices=categorical_features_indices,
-            numeric_features_indices=numeric_features_indices,
-            categorical_features_indices_n_classes=categorical_features_indices_n_classes,
+            categorical_features_indexes=categorical_features_indexes,
+            numeric_features_indexes=numeric_features_indexes,
+            categorical_features_n_classes=categorical_features_n_classes,
             num_emb_hidden=num_emb_hidden,
         )
 
@@ -275,9 +271,9 @@ class MyGNNPooling(nn.Module):
         emb_dim=8,
         conv_hidden_dim=[8],
         dropout=0.3,
-        categorical_features_indices=[],
-        numeric_features_indices=None,
-        categorical_features_indices_n_classes=dict(),
+        categorical_features_indexes=[],
+        numeric_features_indexes=None,
+        categorical_features_n_classes=dict(),
         num_emb_hidden=None,
         add_skip=False,
         conv_layer: Literal["GraphConv", "SAGEConv", "GATConv"] = "GraphConv",
@@ -287,9 +283,9 @@ class MyGNNPooling(nn.Module):
         self.encode_x = EncodeX(
             n_nodes=n_nodes,
             emb_dim=emb_dim,
-            categorical_features_indices=categorical_features_indices,
-            numeric_features_indices=numeric_features_indices,
-            categorical_features_indices_n_classes=categorical_features_indices_n_classes,
+            categorical_features_indexes=categorical_features_indexes,
+            numeric_features_indexes=numeric_features_indexes,
+            categorical_features_n_classes=categorical_features_n_classes,
             num_emb_hidden=num_emb_hidden,
         )
 
@@ -339,19 +335,22 @@ class MyMLP(nn.Module):
         mlp_hidden_dim=[16],
         emb_dim=8,
         dropout=0.3,
-        categorical_features_indices=[],
-        numeric_features_indices=None,
-        categorical_features_indices_n_classes=dict(),
+        categorical_features_indexes=[],
+        numeric_features_indexes=None,
+        categorical_features_n_classes=None,
         num_emb_hidden=None,
     ):
         super().__init__()
 
+        if categorical_features_n_classes is None:
+            categorical_features_n_classes = dict()
+
         self.encode_x = EncodeX(
             n_nodes=n_nodes,
             emb_dim=emb_dim,
-            categorical_features_indices=categorical_features_indices,
-            numeric_features_indices=numeric_features_indices,
-            categorical_features_indices_n_classes=categorical_features_indices_n_classes,
+            categorical_features_indexes=categorical_features_indexes,
+            numeric_features_indexes=numeric_features_indexes,
+            categorical_features_n_classes=categorical_features_n_classes,
             num_emb_hidden=num_emb_hidden,
         )
 
