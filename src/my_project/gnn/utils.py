@@ -73,3 +73,23 @@ def remove_nodes(nodes_to_remove, G):
     G2 = G.copy()
     G2.remove_nodes_from(nodes_to_remove)
     return G2
+
+
+def categorical_features_setup(
+    X,
+    categorical_features=[],
+):
+    categorical_features_indexes = [
+        idx
+        for idx, node_name in enumerate(X.columns)
+        if node_name in categorical_features
+    ]
+
+    categorical_features_n_classes = dict(
+        zip(
+            categorical_features_indexes,
+            X.iloc[:, categorical_features_indexes].max().astype(int),
+        )
+    ).copy()
+
+    return categorical_features_indexes, categorical_features_n_classes
