@@ -42,17 +42,25 @@ def build_cv_datamodules(
     preprocessor = None
 
     for fold, fold_graph in zip(folds, fold_graphs):
-        X_fold = X[list(fold_graph.nodes)]
+        assert X.columns.to_list() == list(
+            fold_graph.nodes
+        ), "Graph nodes must match X columns"
+        # X_fold = X[list(fold_graph.nodes)]
 
-        X_train = X_fold.loc[fold["train"]]
+        X_train = X.loc[fold["train"]]
         y_train = y.loc[fold["train"]]
 
-        X_valid = X_fold.loc[fold["valid"]]
+        X_valid = X.loc[fold["valid"]]
         y_valid = y.loc[fold["valid"]]
 
         preprocessor = copy.deepcopy(preprocessing_pipeline)
         X_train_prepared = preprocessor.fit_transform(X_train)
         X_valid_prepared = preprocessor.transform(X_valid)
+
+        X_train_prepared = X_train_prepared[
+            X_train.columns
+        ]  # Ensure columns are in the same order as graph nodes
+        X_valid_prepared = X_valid_prepared[X_valid.columns]
 
         data_fold = GNNDataModule(
             X_train=X_train_prepared.copy(),
