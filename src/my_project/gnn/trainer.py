@@ -40,9 +40,8 @@ class GNNLightningModule(L.LightningModule):
 
     def __init__(
         self,
-        model=None,
         model_cls=MyGNN,
-        model_kwargs: dict = {},
+        model_kwargs: Optional[dict] = None,
         lr: float = 1e-3,
         weight_decay: float = 1e-4,
         class_weights: Optional[torch.Tensor] = None,
@@ -51,10 +50,23 @@ class GNNLightningModule(L.LightningModule):
         scheduler_monitor_mode: Optional[str] = "min",
     ):
         super().__init__()
-        self.save_hyperparameters(ignore=["class_weights", "model"])
+        self.save_hyperparameters(ignore=["class_weights", "model"], logger=False)
+
+        if model_kwargs is None:
+            model_kwargs = {}
+        else:
+            model_kwargs = model_kwargs.copy()
 
         if model is None:
             model = model_cls(**model_kwargs)
+        else:
+            model_cls = type(model)
+            model_cls_param_names = set(model_cls.__init__.__code__.co_varnames)
+            model_kwargs = {
+                k: v
+                for k, v in model_kwargs.items()
+                if k in model_cls_param_names and k != "self"
+            }
 
         self.model = copy.deepcopy(model)
         self.lr = lr
