@@ -4,26 +4,39 @@ from inspect import signature
 import lightning as L
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from my_project.gnn.trainer import GNNLightningModule
-from sklearn import set_config
-
-set_config(transform_output="pandas")
 
 
 def train_gnn(
     params,
     model_cls,
     data,
-    checkpoint_dir=None,
-    monitor_metric="val/loss",
-    monitor_mode="min",
-    max_epochs=100,
-    enable_progress_bar=True,
-    enable_model_summary=True,
-    early_stopping_verbose=True,
-    early_stopping_patience=15,
-    log_every_n_steps=None,
-    precision=None,
+    trial_id=None,
+    fold_id=None,
+    trainer_kwargs=None,
+    monitor_kwargs=None,
+    early_stopping_kwargs=None,
 ):
+    if trainer_kwargs is None:
+        trainer_kwargs = {}
+
+    if monitor_kwargs is None:
+        monitor_kwargs = {
+            "monitor": "val/loss",
+            "mode": "min",
+        }
+
+    checkpoint_dir = trainer_kwargs.pop("checkpoint_dir", None)
+    if checkpoint_dir:
+        if trial_id is not None:
+            checkpoint_dir = (
+                f"{checkpoint_dir}/trial_{trainer_kwargs.get('trial_number', 0)}"
+            )
+
+        if fold_id:
+            checkpoint_dir = f"{checkpoint_dir}/fold_{fold_id}"
+        else:
+            checkpoint_dir = None
+
     batch_size = params.get("batch_size", None)
     if batch_size is not None:
         data = copy.deepcopy(data)
@@ -36,18 +49,14 @@ def train_gnn(
     li_params = {k: v for k, v in params.items() if k in li_params_names}
 
     checkpoint_callback = ModelCheckpoint(
-        monitor=monitor_metric,
-        mode=monitor_mode,
+        **monitor_kwargs,
         save_top_k=1,
         dirpath=checkpoint_dir,
         filename="best",
     )
 
     early_stopping_callback = EarlyStopping(
-        monitor=monitor_metric,
-        mode=monitor_mode,
-        patience=early_stopping_patience,
-        verbose=early_stopping_verbose,
+        **early_stopping_kwargs,
     )
 
     callbacks = [
@@ -56,13 +65,9 @@ def train_gnn(
     ]
 
     trainer = L.Trainer(
-        max_epochs=max_epochs,
         callbacks=callbacks,
-        log_every_n_steps=log_every_n_steps,
-        enable_progress_bar=enable_progress_bar,
-        enable_model_summary=enable_model_summary,
         logger=False,
-        precision=precision,
+        **trainer_kwargs,
     )
 
     lightning_module = GNNLightningModule(

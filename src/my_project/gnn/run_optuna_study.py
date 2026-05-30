@@ -76,14 +76,12 @@ def run_optuna_study_for_gnn(
     study_name: str,
     storage_url: str | None,
     n_trials: int,
-    trainer_kwargs: dict[str, Any],
-    monitor_mode: str,
-    show_progress_bar: bool = False,
     base_params: dict[str, Any] | None = None,
+    show_progress_bar: bool = False,
     optuna_n_jobs: int = 1,
+    direction: str = "minimize",
+    technical_settings: dict[str, Any],
 ) -> optuna.Study:
-    direction = "maximize" if monitor_mode == "max" else "minimize"
-
     study = optuna.create_study(
         direction=direction,
         study_name=study_name,
@@ -104,7 +102,7 @@ def run_optuna_study_for_gnn(
             trial,
             model_cls=model_cls,
             data=data,
-            trainer_kwargs=copy.deepcopy(trainer_kwargs),
+            technical_settings=technical_settings,
             base_params=copy.deepcopy(base_params),
         ),
         n_jobs=optuna_n_jobs,
@@ -115,7 +113,9 @@ def run_optuna_study_for_gnn(
     return study
 
 
-def get_best_trial_checkpoint(study: optuna.Study, monitor_mode: str) -> dict[str, Any]:
+def get_best_trial_checkpoint(
+    study: optuna.Study, monitor_mode: str = "min"
+) -> dict[str, Any]:
     """Return best checkpoint metadata for inference from an Optuna study."""
     best_trial = study.best_trial
     best_checkpoints = best_trial.user_attrs.get("best_checkpoints", [])

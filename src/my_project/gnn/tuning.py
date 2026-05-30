@@ -42,22 +42,14 @@ def suggest_gnn_params(trial, *, base_params=None):
     return suggested_params
 
 
-def objective(trial, model_cls, data, trainer_kwargs=None, base_params=None):
+def objective(trial, model_cls, data, technical_settings=None, base_params=None):
     data = copy.deepcopy(data)
 
-    if trainer_kwargs is None:
-        trainer_kwargs = {
-            "checkpoint_dir": None,
-            "monitor_metric": "val/loss",
-            "monitor_mode": "min",
-            "max_epochs": 100,
-        }
+    if technical_settings is None:
+        technical_settings = {}
 
     if base_params is None:
         base_params = {}
-
-    checkpoint_dir = trainer_kwargs.pop("checkpoint_dir", None)
-    monitor_metric = trainer_kwargs["monitor_metric"]
 
     trial.set_user_attr("model_cls", model_cls.__name__)
 
@@ -70,26 +62,20 @@ def objective(trial, model_cls, data, trainer_kwargs=None, base_params=None):
     fold_best_epochs = []
     fold_best_checkpoints = []
 
-    trial_checkpoint_dir = None
-    if checkpoint_dir:
-        trial_checkpoint_dir = f"{checkpoint_dir}/trial_{trial.number}"
-
     trial.set_user_attr("params", params)
 
     for fold_idx, data_fold in enumerate(data):
-        if trial_checkpoint_dir:
-            fold_checkpoint_dir = f"{trial_checkpoint_dir}/fold_{fold_idx}"
-        else:
-            fold_checkpoint_dir = None
-
         trainer = train_gnn(
             params=params,
             model_cls=model_cls,
+            trial_id=trial.number,
+            fold_id=fold_idx,
             data=data_fold,
-            checkpoint_dir=fold_checkpoint_dir,
-            **trainer_kwargs,
+            **technical_settings,
         )
-        best_score = trainer.callback_metrics[monitor_metric].item()
+        best_score = trainer.callback_metrics[
+            technical_settings["monitor_kwargs"]["monitor"]
+        ].item()
         fold_scores.append(best_score)
 
         best_epoch = _extract_best_epoch(trainer)
