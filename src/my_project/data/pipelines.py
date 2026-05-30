@@ -9,6 +9,11 @@ from sklearn.preprocessing import (
     StandardScaler,
 )
 
+
+def shift_to_non_negative(x):
+    return x + 1
+
+
 dtypes_dict = {
     "number": ["number"],
     "categorical": ["object", "category", "string"],
@@ -72,7 +77,7 @@ ordinal_start_from_1_encoder = Pipeline(
         ),
         (
             "shift_to_non_negative",
-            FunctionTransformer(lambda x: x + 1, feature_names_out="one-to-one"),
+            FunctionTransformer(shift_to_non_negative, feature_names_out="one-to-one"),
         ),
     ],
 )
