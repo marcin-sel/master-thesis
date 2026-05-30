@@ -93,3 +93,15 @@ def categorical_features_setup(
     ).copy()
 
     return categorical_features_indexes, categorical_features_n_classes
+
+
+def x_to_graph(graph, row):
+    graph_i = graph.copy()
+    graph_i_simple = nx.Graph()
+    graph_i_simple.add_nodes_from(graph_i.nodes())
+    graph_i_simple.add_edges_from(graph_i.edges())
+
+    for node in graph_i_simple.nodes:
+        graph_i_simple.nodes[node]["value"] = row[node]
+
+    return graph_i_simple
