@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import lightning as L
-from my_project.gnn.utils import build_graph_dataset, prepare_graph
+from my_project.gnn.utils import build_graph_dataset
 from torch_geometric.loader import DataLoader
 
 
@@ -40,31 +40,11 @@ class GNNDataModule(L.LightningDataModule):
             self.persistent_workers = persistent_workers
 
     def setup(self, stage: str | None = None) -> None:
-        columns = list(self.graph.nodes)
-
-        assert (
-            self.X_train.columns.to_list() == columns
-        ), "Graph nodes must match X_train columns"
-        assert (
-            self.X_valid.columns.to_list() == columns
-        ), "Graph nodes must match X_valid columns"
-        if self.X_test is not None:
-            assert (
-                self.X_test.columns.to_list() == columns
-            ), "Graph nodes must match X_test columns"
-
-        # self.X_train = self.X_train[columns]
-        # self.X_valid = self.X_valid[columns]
-        # if self.X_test is not None:
-        #     self.X_test = self.X_test[columns]
-
-        edge_index, _, _ = prepare_graph(self.graph)
-
-        self.train_dataset = build_graph_dataset(self.X_train, self.y_train, edge_index)
-        self.valid_dataset = build_graph_dataset(self.X_valid, self.y_valid, edge_index)
+        self.train_dataset = build_graph_dataset(self.X_train, self.y_train, self.graph)
+        self.valid_dataset = build_graph_dataset(self.X_valid, self.y_valid, self.graph)
         if self.X_test is not None and self.y_test is not None:
             self.test_dataset = build_graph_dataset(
-                self.X_test, self.y_test, edge_index
+                self.X_test, self.y_test, self.graph
             )
         else:
             self.test_dataset = None

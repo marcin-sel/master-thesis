@@ -2,7 +2,12 @@ import torch
 from torch_geometric.data import Data
 
 
-def build_graph_dataset(X, y, edges_tensor):
+def build_graph_dataset(X, y, graph):
+    columns = list(graph.nodes)
+    X = X[columns]
+
+    edges_tensor, _, _ = prepare_graph(graph)
+
     y_arr = y.astype(int).values
     node_ids = torch.arange(X.shape[1], dtype=torch.float)
     graph_ids = X.index.to_numpy()
