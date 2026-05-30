@@ -28,9 +28,7 @@ def train_gnn(
     checkpoint_dir = trainer_kwargs.pop("checkpoint_dir", None)
     if checkpoint_dir:
         if trial_id is not None:
-            checkpoint_dir = (
-                f"{checkpoint_dir}/trial_{trainer_kwargs.get('trial_number', 0)}"
-            )
+            checkpoint_dir = f"{checkpoint_dir}/trial_{trial_id}"
 
         if fold_id:
             checkpoint_dir = f"{checkpoint_dir}/fold_{fold_id}"
