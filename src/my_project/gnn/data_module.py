@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Sequence
-
 import lightning as L
 from my_project.gnn.utils import build_graph_dataset, prepare_graph
 from torch_geometric.loader import DataLoader
@@ -18,9 +16,9 @@ class GNNDataModule(L.LightningDataModule):
         y_valid,
         X_test=None,
         y_test=None,
-        batch_size: int = 32,
+        batch_size: int = 256,
         num_workers: int = 0,
-        categorical_features: Sequence[str] | None = None,
+        persistent_workers: bool | None = None,
     ):
         super().__init__()
         self.graph = graph
@@ -34,15 +32,31 @@ class GNNDataModule(L.LightningDataModule):
         self.num_workers = num_workers
         self.train_dataset = None
         self.valid_dataset = None
-        self.test_dataset = (None,)
+        self.test_dataset = None
+
+        if persistent_workers is None:
+            self.persistent_workers = num_workers > 0
+        else:
+            self.persistent_workers = persistent_workers
 
     def setup(self, stage: str | None = None) -> None:
         columns = list(self.graph.nodes)
 
-        self.X_train = self.X_train[columns]
-        self.X_valid = self.X_valid[columns]
+        assert (
+            self.X_train.columns.to_list() == columns
+        ), "Graph nodes must match X_train columns"
+        assert (
+            self.X_valid.columns.to_list() == columns
+        ), "Graph nodes must match X_valid columns"
         if self.X_test is not None:
-            self.X_test = self.X_test[columns]
+            assert (
+                self.X_test.columns.to_list() == columns
+            ), "Graph nodes must match X_test columns"
+
+        # self.X_train = self.X_train[columns]
+        # self.X_valid = self.X_valid[columns]
+        # if self.X_test is not None:
+        #     self.X_test = self.X_test[columns]
 
         edge_index, _, _ = prepare_graph(self.graph)
 
@@ -62,6 +76,7 @@ class GNNDataModule(L.LightningDataModule):
             shuffle=True,
             pin_memory=True,
             num_workers=self.num_workers,
+            persistent_workers=self.persistent_workers,
         )
 
     def val_dataloader(self):
@@ -71,6 +86,7 @@ class GNNDataModule(L.LightningDataModule):
             shuffle=False,
             pin_memory=True,
             num_workers=self.num_workers,
+            persistent_workers=self.persistent_workers,
         )
 
     def test_dataloader(self):
@@ -80,4 +96,5 @@ class GNNDataModule(L.LightningDataModule):
             shuffle=False,
             pin_memory=True,
             num_workers=self.num_workers,
+            persistent_workers=self.persistent_workers,
         )
