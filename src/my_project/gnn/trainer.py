@@ -81,6 +81,7 @@ class GNNLightningModule(L.LightningModule):
                 ),
             }
         )
+        self.train_metrics = metric_collection.clone(prefix="train/")
         self.val_metrics = metric_collection.clone(prefix="val/")
         self.test_metrics = metric_collection.clone(prefix="test/")
 
@@ -97,7 +98,7 @@ class GNNLightningModule(L.LightningModule):
         return loss, probs, batch.y, batch_size
 
     def training_step(self, batch, batch_idx: int) -> torch.Tensor:
-        loss, _, _, batch_size = self._shared_step(batch)
+        loss, probs, labels, batch_size = self._shared_step(batch)
         self.log(
             "train/loss",
             loss,
@@ -106,6 +107,7 @@ class GNNLightningModule(L.LightningModule):
             prog_bar=True,
             batch_size=batch_size,
         )
+        self.train_metrics.update(probs.detach(), labels.detach().long())
         return loss
 
     def validation_step(self, batch, batch_idx: int) -> None:
