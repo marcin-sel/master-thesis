@@ -187,7 +187,7 @@ class ThresholdImputer(BaseEstimator, TransformerMixin):
                 strategy=self.strategy,
                 fill_value=self.fill_value,
             )
-            subset = X[self.cols_to_impute_]
+            subset = X[self.cols_to_impute_].replace({pd.NA: np.nan})
             self.imputer_.fit(subset)
 
         return self
@@ -196,7 +196,7 @@ class ThresholdImputer(BaseEstimator, TransformerMixin):
         X = pd.DataFrame(X).copy()
 
         if self.cols_to_impute_:
-            subset = X[self.cols_to_impute_]
+            subset = X[self.cols_to_impute_].replace({pd.NA: np.nan})
             imputed = self.imputer_.transform(subset)
             # Use .values to avoid pandas index/column alignment issues
             # when transform_output="pandas" is active.
