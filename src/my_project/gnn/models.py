@@ -2,7 +2,13 @@ from typing import Literal
 
 import torch
 import torch.nn as nn
-from torch_geometric.nn import GATConv, GraphConv, SAGEConv, global_max_pool
+from torch_geometric.nn import (
+    GATConv,
+    GraphConv,
+    SAGEConv,
+    global_max_pool,
+    global_mean_pool,
+)
 
 
 class NumericEncoder(nn.Module):
@@ -277,6 +283,7 @@ class MyGNNPooling(nn.Module):
         num_emb_hidden=None,
         add_skip=False,
         conv_layer: Literal["GraphConv", "SAGEConv", "GATConv"] = "GraphConv",
+        pooling_type: Literal["mean", "max"] = "mean",
     ):
         super().__init__()
 
@@ -306,6 +313,13 @@ class MyGNNPooling(nn.Module):
         mlp_hidden_dims = [conv_hidden_dim[-1]] + mlp_hidden_dim + [n_classes]
         self.mlp = MLP(mlp_hidden_dims, dropout)
 
+        if pooling_type == "mean":
+            self.pooling = global_mean_pool
+        elif pooling_type == "max":
+            self.pooling = global_max_pool
+        else:
+            raise ValueError(f"Unsupported pooling_type: {pooling_type}")
+
     def forward(self, x, edge_index=None, batch=None):
         if batch is not None:
             # batch_size = int(batch.max().item()) + 1
@@ -322,7 +336,7 @@ class MyGNNPooling(nn.Module):
                 self.n_nodes
             )
 
-        x = global_max_pool(x, batch)
+        x = self.pooling(x, batch)
 
         return self.mlp(x)
 
