@@ -190,18 +190,19 @@ class ThresholdImputer(BaseEstimator, TransformerMixin):
             subset = X[self.cols_to_impute_].replace({pd.NA: np.nan})
             self.imputer_.fit(subset)
 
+        self.cols_to_impute_dtypes_ = X[self.cols_to_impute_].dtypes.to_dict()
+
         return self
 
     def transform(self, X):
         X = pd.DataFrame(X).copy()
 
         if self.cols_to_impute_:
-            subset = X[self.cols_to_impute_].replace({pd.NA: np.nan})
-            imputed = self.imputer_.transform(subset)
-            # Use .values to avoid pandas index/column alignment issues
-            # when transform_output="pandas" is active.
-            X[self.cols_to_impute_] = (
-                imputed.values if hasattr(imputed, "values") else imputed
+            X[self.cols_to_impute_] = self.imputer_.transform(
+                X[self.cols_to_impute_].replace({pd.NA: np.nan})
             )
+
+        for col, dtype in self.cols_to_impute_dtypes_.items():
+            X[col] = X[col].astype(dtype)
 
         return X
