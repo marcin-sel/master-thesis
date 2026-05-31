@@ -80,24 +80,12 @@ def remove_nodes(nodes_to_remove, G):
     return G2
 
 
-def categorical_features_setup(
-    X,
-    categorical_features=[],
-):
-    categorical_features_indexes = [
-        idx
-        for idx, node_name in enumerate(X.columns)
-        if node_name in categorical_features
-    ]
+def feature_indexes(features, columns):
+    return {col: i for i, col in enumerate(columns) if col in features}
 
-    categorical_features_n_classes = dict(
-        zip(
-            categorical_features_indexes,
-            X.iloc[:, categorical_features_indexes].max().astype(int),
-        )
-    ).copy()
 
-    return categorical_features_indexes, categorical_features_n_classes
+def feature_n_classes(X):
+    return dict(zip(X.columns, X.max().astype(int)))
 
 
 def x_to_graph(graph, row):
