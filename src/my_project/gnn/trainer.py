@@ -40,6 +40,7 @@ class GNNLightningModule(L.LightningModule):
 
     def __init__(
         self,
+        model=None,
         model_cls=MyGNN,
         model_kwargs: Optional[dict] = None,
         lr: float = 1e-3,
@@ -155,6 +156,15 @@ class GNNLightningModule(L.LightningModule):
         metrics.pop("test/specificity")
         self.log_dict(metrics)
         self.test_metrics.reset()
+
+    def on_train_epoch_end(self) -> None:
+        metrics = self.train_metrics.compute()
+        metrics["train/balanced_acc"] = (
+            metrics["train/recall"] + metrics["train/specificity"]
+        ) / 2
+        metrics.pop("train/specificity")
+        self.log_dict(metrics)
+        self.train_metrics.reset()
 
     def predict_step(self, batch, batch_idx: int) -> dict:
         _, probs, labels, _ = self._shared_step(batch)
