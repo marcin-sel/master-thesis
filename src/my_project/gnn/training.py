@@ -69,6 +69,21 @@ def train_gnn(
             {k: json.dumps(v) for k, v in params.items() if isinstance(v, (dict))}
         )
 
+        if trial_id is not None:
+            logger.experiment.set_tag(
+                run_id=logger.run_id,
+                key="trial_id",
+                value=str(trial_id),
+            )
+            logger.log_hyperparams({"trial_id": int(trial_id)})
+        if fold_id is not None:
+            logger.experiment.set_tag(
+                run_id=logger.run_id,
+                key="fold_id",
+                value=str(fold_id),
+            )
+            logger.log_hyperparams({"fold_id": int(fold_id)})
+
     else:
         logger = False
 
