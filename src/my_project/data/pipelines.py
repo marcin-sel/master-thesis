@@ -53,13 +53,13 @@ boolean_pipeline = Pipeline(
 
 preprocessor_transformer = ColumnTransformer(
     [
-        ("num", numeric_pipeline, selector(dtype_include=dtypes_dict["number"])),
         (
             "cat",
             categorical_pipeline,
             selector(dtype_include=dtypes_dict["categorical"]),
         ),
         ("bool", boolean_pipeline, selector(dtype_include=dtypes_dict["boolean"])),
+        ("num", numeric_pipeline, selector(dtype_include=dtypes_dict["number"])),
     ],
     verbose_feature_names_out=False,
 )
