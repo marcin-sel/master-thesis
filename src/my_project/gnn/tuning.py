@@ -14,20 +14,30 @@ def suggest_gnn_params(trial, *, base_params=None):
     else:
         base_params = base_params.copy()
 
+    emb_dim = trial.suggest_categorical("emb_dim", [32, 64, 128])
+
     n_conv_layers = trial.suggest_int("n_conv_layers", 1, 4)
     n_mlp_layers = trial.suggest_int("n_mlp_layers", 1, 4)
 
-    conv_hidden_dim = [
-        trial.suggest_categorical(f"conv_hidden_dim_{layer_idx}", [16, 32, 64, 128])
-        for layer_idx in range(n_conv_layers)
-    ]
+    add_skip = False
+    # add_skip = trial.suggest_categorical("add_skip", [False, True])
+
+    if add_skip:
+        conv_hidden_dim = [emb_dim] * n_conv_layers
+    else:
+        conv_hidden_dim = [
+            trial.suggest_categorical(f"conv_hidden_dim_{layer_idx}", [16, 32, 64, 128])
+            for layer_idx in range(n_conv_layers)
+        ]
+
     mlp_hidden_dim = [
         trial.suggest_categorical(f"mlp_hidden_dim_{layer_idx}", [16, 32, 64, 128])
         for layer_idx in range(n_mlp_layers)
     ]
 
     trial_suggested_params = {
-        "emb_dim": trial.suggest_categorical("emb_dim", [32, 64, 128]),
+        "emb_dim": emb_dim,
+        "add_skip": add_skip,
         "num_emb_hidden": trial.suggest_int("num_emb_hidden", 4, 16),
         "conv_hidden_dim": conv_hidden_dim,
         "mlp_hidden_dim": mlp_hidden_dim,
