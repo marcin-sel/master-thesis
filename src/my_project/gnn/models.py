@@ -177,6 +177,13 @@ class GNN(nn.Module):
     ):
         super().__init__()
 
+        if add_skip:
+            for d in hidden_dim:
+                if d != emb_dim:
+                    raise ValueError(
+                        "For add_skip=True, all hidden_dim values must be equal to emb_dim"
+                    )
+
         self.n_nodes = n_nodes
         self.hidden_dim = hidden_dim
         self.emb_dim = emb_dim
