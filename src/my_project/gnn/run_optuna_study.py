@@ -19,8 +19,10 @@ def build_cv_datamodules(
     folds: Sequence[dict[str, Any]],
     graph: Any | None = None,
     graphs: Sequence[Any] | None = None,
-    preprocessing_pipeline,
+    preprocessing_pipeline=None,
     num_workers: int = 0,
+    keep_on_gpu: bool = True,
+    device: str | None = None,
 ) -> dict[str, Any]:
     """Create one GNNDataModule per CV fold after fitting preprocessing on train only.
 
@@ -59,6 +61,8 @@ def build_cv_datamodules(
             X_valid=X_valid,
             y_valid=y_valid,
             num_workers=num_workers,
+            keep_on_gpu=keep_on_gpu,
+            device=device,
         )
         data_fold.setup()
         data.append(data_fold)
