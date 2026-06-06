@@ -8,7 +8,8 @@ from my_project.gnn.data_module import GNNDataModule
 from my_project.gnn.training import train_gnn
 
 
-def suggest_gnn_params(trial, *, base_params=None):
+
+def suggest_gnn_params(trial, base_params=None):
     if base_params is None:
         base_params = {}
     else:
@@ -52,8 +53,12 @@ def suggest_gnn_params(trial, *, base_params=None):
     return suggested_params
 
 
-def objective(trial, model_cls, data, technical_settings=None, base_params=None):
-    data = copy.deepcopy(data)
+def objective(
+        trial, 
+        model_cls, data, 
+        technical_settings=None, 
+        base_params=None, 
+    ):    
 
     if technical_settings is None:
         technical_settings = {}
@@ -65,6 +70,7 @@ def objective(trial, model_cls, data, technical_settings=None, base_params=None)
 
     if data.__class__ == GNNDataModule:
         data = [data]
+    data = copy.deepcopy(data)
 
     params = suggest_gnn_params(trial, base_params=base_params)
 
@@ -75,11 +81,18 @@ def objective(trial, model_cls, data, technical_settings=None, base_params=None)
     trial.set_user_attr("params", params)
 
     for fold_idx, data_fold in enumerate(data):
+        to_log = technical_settings.get("to_log", {}).copy()
+        to_log.update(
+            {
+                "fold_id": fold_idx,
+                "trial_id": trial.number,
+            }
+        )
+        technical_settings["to_log"] = to_log
+
         trainer = train_gnn(
             params=params,
             model_cls=model_cls,
-            trial_id=trial.number,
-            fold_id=fold_idx,
             data=data_fold,
             **technical_settings,
         )
