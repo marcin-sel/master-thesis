@@ -41,6 +41,7 @@ def build_cv_datamodules(
         fold_graphs = [graph] * len(folds)
 
     data = []
+    preprocessing_pipelines = []
 
     for fold, fold_graph in zip(folds, fold_graphs):
         X_train = X.loc[fold["train"]]
@@ -66,10 +67,11 @@ def build_cv_datamodules(
         )
         data_fold.setup()
         data.append(data_fold)
+        preprocessing_pipelines.append(copy.deepcopy(preprocessing_pipeline))
 
     return {
         "data": data,
-        "preprocessing_pipeline": preprocessing_pipeline,
+        "preprocessing_pipelines": preprocessing_pipelines,
     }
 
 
