@@ -1,5 +1,9 @@
+from typing import Optional
+
+import networkx as nx
 import torch
 from torch_geometric.data import Data
+from torch_geometric.utils import add_self_loops, to_undirected
 
 
 def build_graph_dataset(X, y, graph):
@@ -29,18 +33,11 @@ def build_graph_dataset(X, y, graph):
     ]
 
 
-from typing import Optional
-
-import networkx as nx
-import torch
-from torch_geometric.utils import add_self_loops, to_undirected
-
-
 def prepare_graph(
     graph,
     n_nodes: Optional[int] = None,
     undirected: bool = True,
-    self_loops: bool = True,
+    self_loops: bool = False,
 ):
     if n_nodes is None:
         n_nodes = len(graph.nodes())
