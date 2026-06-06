@@ -8,7 +8,7 @@ import numpy as np
 import optuna
 import pandas as pd
 from my_project.gnn.data_module import GNNDataModule
-from my_project.gnn.tuning import objective
+from my_project.gnn.tuning import objective, suggest_gnn_params
 from optuna.trial import TrialState
 
 
@@ -85,6 +85,7 @@ def run_optuna_study_for_gnn(
     optuna_n_jobs: int = 1,
     direction: str = "minimize",
     technical_settings: dict[str, Any],
+    suggest_params_func: callable = suggest_gnn_params,
 ) -> optuna.Study:
     study = optuna.create_study(
         direction=direction,
@@ -108,6 +109,7 @@ def run_optuna_study_for_gnn(
             data=data,
             technical_settings=technical_settings,
             base_params=copy.deepcopy(base_params),
+            suggest_params_func=suggest_params_func,
         ),
         n_jobs=optuna_n_jobs,
         n_trials=remaining_trials,
