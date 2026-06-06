@@ -7,6 +7,34 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from my_project.gnn.data_module import GNNDataModule
 from my_project.gnn.training import train_gnn
 
+def suggest_mlp_params(trial, base_params=None):
+    if base_params is None:
+        base_params = {}
+    else:
+        base_params = base_params.copy()
+
+    emb_dim = trial.suggest_categorical("emb_dim", [32, 64, 128])
+
+    n_mlp_layers = trial.suggest_int("n_mlp_layers", 1, 4)
+
+    mlp_hidden_dim = [
+        trial.suggest_categorical(f"mlp_hidden_dim_{layer_idx}", [16, 32, 64, 128])
+        for layer_idx in range(n_mlp_layers)
+    ]
+
+    trial_suggested_params = {
+        "emb_dim": emb_dim,
+        "num_emb_hidden": trial.suggest_int("num_emb_hidden", 4, 16),
+        "mlp_hidden_dim": mlp_hidden_dim,
+        "dropout": trial.suggest_float("dropout", 0.1, 0.5),
+        "lr": trial.suggest_float("lr", 1e-4, 5e-3, log=True),
+        "weight_decay": trial.suggest_float("weight_decay", 1e-6, 1e-3, log=True),
+        "batch_size": trial.suggest_categorical("batch_size", [128, 256, 384, 512]),
+    }
+
+    suggested_params = base_params.copy()
+    suggested_params.update(trial_suggested_params)
+    return suggested_params
 
 
 def suggest_gnn_params(trial, base_params=None):
@@ -18,9 +46,8 @@ def suggest_gnn_params(trial, base_params=None):
     emb_dim = trial.suggest_categorical("emb_dim", [32, 64, 128])
 
     n_conv_layers = trial.suggest_int("n_conv_layers", 1, 4)
-    n_mlp_layers = trial.suggest_int("n_mlp_layers", 1, 4)
 
-    add_skip = False
+    add_skip = base_params.get("add_skip", False)
     # add_skip = trial.suggest_categorical("add_skip", [False, True])
 
     if add_skip:
@@ -30,6 +57,8 @@ def suggest_gnn_params(trial, base_params=None):
             trial.suggest_categorical(f"conv_hidden_dim_{layer_idx}", [16, 32, 64, 128])
             for layer_idx in range(n_conv_layers)
         ]
+
+    n_mlp_layers = trial.suggest_int("n_mlp_layers", 1, 4)
 
     mlp_hidden_dim = [
         trial.suggest_categorical(f"mlp_hidden_dim_{layer_idx}", [16, 32, 64, 128])
