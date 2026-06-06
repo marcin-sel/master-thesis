@@ -11,6 +11,8 @@ def build_graph_dataset(X, y, graph):
     X = X[columns]
 
     edges_tensor, _, _ = prepare_graph(graph)
+    if edges_tensor.size(0) == 0:
+        edges_tensor = torch.empty((2, 0), dtype=torch.long)
 
     y_arr = y.astype(int).values
     node_ids = torch.arange(X.shape[1], dtype=torch.float)
