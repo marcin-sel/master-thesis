@@ -1,6 +1,7 @@
 import copy
 import json
 from inspect import signature
+from typing import Optional
 
 import lightning as L
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
@@ -14,13 +15,17 @@ def train_gnn(
     params,
     model_cls,
     data,
-    trial_id=None,
-    fold_id=None,
-    trainer_kwargs=None,
-    monitor_kwargs=None,
-    early_stopping_kwargs=None,
-    logger_kwargs=None,
+    to_log: Optional[dict] = None,
+    trainer_kwargs: Optional[dict] = None,
+    monitor_kwargs: Optional[dict] = None,
+    early_stopping_kwargs: Optional[dict] = None,
+    logger_kwargs: Optional[dict] = None,
 ):
+    if to_log is None:
+        to_log = {}
+    else:
+        to_log = to_log.copy()
+
     if trainer_kwargs is None:
         trainer_kwargs = {}
     else:
@@ -38,6 +43,9 @@ def train_gnn(
         logger_kwargs = {}
     else:
         logger_kwargs = logger_kwargs.copy()
+
+    trial_id = to_log.pop("trial_id", None)
+    fold_id = to_log.pop("fold_id", None)
 
     experiment_name = logger_kwargs.pop("experiment_name", None)
 
@@ -69,20 +77,9 @@ def train_gnn(
             {k: json.dumps(v) for k, v in params.items() if isinstance(v, (dict))}
         )
 
-        if trial_id is not None:
-            logger.experiment.set_tag(
-                run_id=logger.run_id,
-                key="trial_id",
-                value=str(trial_id),
-            )
-            logger.log_hyperparams({"trial_id": int(trial_id)})
-        if fold_id is not None:
-            logger.experiment.set_tag(
-                run_id=logger.run_id,
-                key="fold_id",
-                value=str(fold_id),
-            )
-            logger.log_hyperparams({"fold_id": int(fold_id)})
+        for k, v in to_log.items():
+            logger.log_hyperparams({k: v})
+            logger.set_tag(key=k, value=str(v))
 
     else:
         logger = False
