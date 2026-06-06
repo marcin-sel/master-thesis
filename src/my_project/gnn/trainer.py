@@ -4,7 +4,6 @@ from typing import Optional
 import lightning as L
 import torch
 import torch.nn as nn
-from my_project.gnn.models import MyGNN
 from torchmetrics import MetricCollection
 from torchmetrics.classification import (
     BinaryAUROC,
@@ -41,7 +40,7 @@ class GNNLightningModule(L.LightningModule):
     def __init__(
         self,
         model=None,
-        model_cls=MyGNN,
+        model_cls=None,
         model_kwargs: Optional[dict] = None,
         lr: float = 1e-3,
         weight_decay: float = 1e-4,
