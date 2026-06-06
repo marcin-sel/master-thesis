@@ -7,6 +7,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from my_project.gnn.data_module import GNNDataModule
 from my_project.gnn.training import train_gnn
 
+
 def suggest_mlp_params(trial, base_params=None):
     if base_params is None:
         base_params = {}
@@ -83,12 +84,13 @@ def suggest_gnn_params(trial, base_params=None):
 
 
 def objective(
-        trial, 
-        model_cls, data, 
-        technical_settings=None, 
-        base_params=None, 
-    ):    
-
+    trial,
+    model_cls,
+    data,
+    technical_settings=None,
+    base_params=None,
+    suggest_params_func=suggest_gnn_params,
+):
     if technical_settings is None:
         technical_settings = {}
 
@@ -101,7 +103,7 @@ def objective(
         data = [data]
     data = copy.deepcopy(data)
 
-    params = suggest_gnn_params(trial, base_params=base_params)
+    params = suggest_params_func(trial, base_params=base_params)
 
     fold_scores = []
     fold_best_epochs = []
