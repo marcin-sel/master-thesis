@@ -44,8 +44,8 @@ def train_gnn(
     else:
         logger_kwargs = logger_kwargs.copy()
 
-    trial_id = to_log.pop("trial_id", None)
-    fold_id = to_log.pop("fold_id", None)
+    trial_id = to_log.get("trial_id", None)
+    fold_id = to_log.get("fold_id", None)
 
     experiment_name = logger_kwargs.pop("experiment_name", None)
 
