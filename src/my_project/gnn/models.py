@@ -219,7 +219,7 @@ class GNN(nn.Module):
         return x
 
 
-class MyGNN(nn.Module):
+class MyGNNConcat(nn.Module):
     def __init__(
         self,
         n_nodes=None,
@@ -276,7 +276,7 @@ class MyGNN(nn.Module):
         return self.mlp(x)
 
 
-class MyGNNPooling(nn.Module):
+class MyGNN(nn.Module):
     def __init__(
         self,
         n_nodes,
