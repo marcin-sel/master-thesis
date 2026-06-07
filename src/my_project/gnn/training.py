@@ -79,7 +79,11 @@ def train_gnn(
 
         for k, v in to_log.items():
             logger.log_hyperparams({k: v})
-            logger.set_tag(key=k, value=str(v))
+            logger.experiment.set_tag(
+                run_id=logger.run_id,
+                key=k,
+                value=str(v),
+            )
 
     else:
         logger = False
