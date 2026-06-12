@@ -3,12 +3,22 @@ from typing import Literal
 import torch
 import torch.nn as nn
 from torch_geometric.nn import (
+    FAConv,
     GATConv,
     GraphConv,
     SAGEConv,
+    TransformerConv,
     global_max_pool,
     global_mean_pool,
 )
+
+TRANSFORMERS_DICT = {
+    "GraphConv": GraphConv,
+    "SAGEConv": SAGEConv,
+    "GATConv": GATConv,
+    "FAConv": FAConv,
+    "TransformerConv": TransformerConv,
+}
 
 
 class NumericEncoder(nn.Module):
@@ -33,7 +43,7 @@ class EncodeX(nn.Module):
         self,
         n_nodes,
         emb_dim=8,
-        num_emb_hidden=8,
+        num_emb_hidden=None,
         numeric_features_indexes=None,
         categorical_features_index_n_classes_map=None,
     ):
@@ -72,7 +82,9 @@ class EncodeX(nn.Module):
 
         self.num_embeddings = nn.ModuleDict(
             {
-                str(idx): NumericEncoder(1, num_emb_hidden, emb_dim)
+                str(idx): NumericEncoder(
+                    input_dim=1, hidden_dim=num_emb_hidden, output_dim=emb_dim
+                )
                 for idx in self.numeric_features_indexes
             }
         )
@@ -115,7 +127,14 @@ class EncodeX(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, dims, dropout=0.3, activation="relu", negative_slope=0.01):
+    def __init__(
+        self,
+        dims,
+        dropout=0.3,
+        activation="relu",
+        negative_slope=0.01,
+        batch_norm=True,
+    ):
         super().__init__()
 
         if activation == "relu":
@@ -131,6 +150,8 @@ class MLP(nn.Module):
             if i < len(dims) - 2:
                 layers.append(activation_layer())
                 layers.append(nn.Dropout(dropout))
+                if batch_norm:
+                    layers.append(nn.BatchNorm1d(out_features))
 
         self.mlp = nn.Sequential(*layers)
 
@@ -146,10 +167,19 @@ class SingleConvLayer(nn.Module):
         conv_layer=SAGEConv,
         dropout=0.3,
         add_skip=False,
+        batch_norm=True,
+        heads=None,
     ):
         super().__init__()
 
-        self.conv = conv_layer(in_channels, out_channels)
+        self.heads = heads
+
+        if conv_layer == GATConv and heads is not None:
+            self.conv = conv_layer(in_channels, out_channels, heads=heads)
+        else:
+            self.conv = conv_layer(in_channels, out_channels)
+
+        self.batch_norm = nn.BatchNorm1d(out_channels) if batch_norm else None
 
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
@@ -159,6 +189,8 @@ class SingleConvLayer(nn.Module):
         if self.add_skip:
             x_skip = x
         x = self.conv(x, edge_index)
+        if self.batch_norm:
+            x = self.batch_norm(x)
         x = self.relu(x)
         x = self.dropout(x)
         if self.add_skip:
@@ -173,9 +205,13 @@ class GNN(nn.Module):
         emb_dim=8,
         hidden_dim=[8],
         dropout=0.3,
+        heads=1,
         categorical_features_index_n_classes_map=dict(),
         add_skip=False,
-        conv_layer: Literal["GraphConv", "SAGEConv", "GATConv"] = "GraphConv",
+        batch_norm=True,
+        conv_layer: Literal[
+            "GraphConv", "SAGEConv", "GATConv", "FAConv", "TransformerConv"
+        ] = "GraphConv",
     ):
         super().__init__()
 
@@ -186,6 +222,8 @@ class GNN(nn.Module):
                         "For add_skip=True, all hidden_dim values must be equal to emb_dim"
                     )
 
+        self.heads = heads if conv_layer == "GATConv" else None
+
         self.n_nodes = n_nodes
         self.hidden_dim = hidden_dim
         self.emb_dim = emb_dim
@@ -194,12 +232,8 @@ class GNN(nn.Module):
             categorical_features_index_n_classes_map
         )
 
-        if conv_layer == "GraphConv":
-            conv_layer = GraphConv
-        elif conv_layer == "SAGEConv":
-            conv_layer = SAGEConv
-        elif conv_layer == "GATConv":
-            conv_layer = GATConv
+        if conv_layer in TRANSFORMERS_DICT:
+            conv_layer = TRANSFORMERS_DICT[conv_layer]
         else:
             raise ValueError(f"Unsupported conv_layer: {conv_layer}")
 
@@ -208,7 +242,13 @@ class GNN(nn.Module):
         for in_channels, out_channels in zip(hidden_dims[:-1], hidden_dims[1:]):
             self.conv_layers.append(
                 SingleConvLayer(
-                    in_channels, out_channels, conv_layer, dropout, add_skip
+                    in_channels=in_channels,
+                    out_channels=out_channels,
+                    conv_layer=conv_layer,
+                    dropout=dropout,
+                    add_skip=add_skip,
+                    batch_norm=batch_norm,
+                    heads=self.heads,
                 )
             )
 
@@ -217,63 +257,6 @@ class GNN(nn.Module):
             x = conv(x, edge_index)
 
         return x
-
-
-class MyGNNConcat(nn.Module):
-    def __init__(
-        self,
-        n_nodes=None,
-        n_classes=2,
-        mlp_hidden_dim=[16],
-        emb_dim=8,
-        conv_hidden_dim=[8],
-        dropout=0.3,
-        numeric_features_indexes=None,
-        categorical_features_index_n_classes_map=dict(),
-        num_emb_hidden=None,
-        add_skip=False,
-        conv_layer: Literal["GraphConv", "SAGEConv", "GATConv"] = "GraphConv",
-    ):
-        super().__init__()
-
-        self.encode_x = EncodeX(
-            n_nodes=n_nodes,
-            emb_dim=emb_dim,
-            numeric_features_indexes=numeric_features_indexes,
-            categorical_features_index_n_classes_map=categorical_features_index_n_classes_map,
-            num_emb_hidden=num_emb_hidden,
-        )
-
-        self.pre_conv_dropout = nn.Dropout(dropout)
-
-        self.GNN = GNN(
-            n_nodes=n_nodes,
-            emb_dim=emb_dim,
-            hidden_dim=conv_hidden_dim,
-            dropout=dropout,
-            add_skip=add_skip,
-            conv_layer=conv_layer,
-        )
-
-        self.conv_hidden_dim = conv_hidden_dim
-        self.n_nodes = n_nodes
-
-        mlp_hidden_dims = [n_nodes * conv_hidden_dim[-1]] + mlp_hidden_dim + [n_classes]
-        self.mlp = MLP(mlp_hidden_dims, dropout)
-
-    def forward(self, x, edge_index=None, batch=None):
-        if batch is not None:
-            batch_size = int(batch.max().item()) + 1
-        else:
-            batch_size = x.size(0) // self.n_nodes
-
-        x = self.encode_x(x)
-        x = self.pre_conv_dropout(x)
-        x = self.GNN(x, edge_index, batch)
-
-        x = x.reshape(batch_size, self.n_nodes * self.conv_hidden_dim[-1])
-
-        return self.mlp(x)
 
 
 class MyGNN(nn.Module):
@@ -289,10 +272,14 @@ class MyGNN(nn.Module):
         categorical_features_index_n_classes_map=dict(),
         num_emb_hidden=None,
         add_skip=False,
+        batch_norm=True,
+        heads=None,
         conv_layer: Literal["GraphConv", "SAGEConv", "GATConv"] = "GraphConv",
         pooling_type: Literal["mean", "max"] = "mean",
     ):
         super().__init__()
+
+        self.heads = heads if conv_layer == "GATConv" else None
 
         self.encode_x = EncodeX(
             n_nodes=n_nodes,
@@ -310,7 +297,9 @@ class MyGNN(nn.Module):
             hidden_dim=conv_hidden_dim,
             dropout=dropout,
             add_skip=add_skip,
+            batch_norm=batch_norm,
             conv_layer=conv_layer,
+            heads=self.heads,
         )
 
         self.conv_hidden_dim = conv_hidden_dim
