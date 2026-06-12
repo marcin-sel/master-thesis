@@ -8,23 +8,35 @@ from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import MLFlowLogger
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
+from mlflow.utils.mlflow_tags import MLFLOW_PARENT_RUN_ID
 from my_project.gnn.trainer import GNNLightningModule
+
+
+class EpochMLFlowLogger(MLFlowLogger):
+    def log_metrics(self, metrics, step=None):
+        trainer = self._trainer
+        epoch = trainer.current_epoch
+        super().log_metrics(metrics, step=epoch)
 
 
 def train_gnn(
     params,
     model_cls,
     data,
-    to_log: Optional[dict] = None,
+    trial_id: Optional[int] = None,
+    fold_id: Optional[int] = None,
+    extra_params: Optional[dict] = None,
+    tags: Optional[dict] = None,
+    extra_metrics: Optional[dict] = None,
     trainer_kwargs: Optional[dict] = None,
     monitor_kwargs: Optional[dict] = None,
     early_stopping_kwargs: Optional[dict] = None,
     logger_kwargs: Optional[dict] = None,
+    parent_run_id: Optional[str] = None,
 ):
-    if to_log is None:
-        to_log = {}
-    else:
-        to_log = to_log.copy()
+    extra_params = {} if extra_params is None else extra_params.copy()
+    tags = {} if tags is None else tags.copy()
+    extra_metrics = {} if extra_metrics is None else extra_metrics.copy()
 
     if trainer_kwargs is None:
         trainer_kwargs = {}
@@ -44,10 +56,24 @@ def train_gnn(
     else:
         logger_kwargs = logger_kwargs.copy()
 
-    trial_id = to_log.get("trial_id", None)
-    fold_id = to_log.get("fold_id", None)
-
     experiment_name = logger_kwargs.pop("experiment_name", None)
+    experiment_tags = logger_kwargs.pop("experiment_tags", None)
+
+    # Collect run-level params, tags and metrics from the explicit dicts.
+    run_params = {}
+    for key, value in (("trial_id", trial_id), ("fold_id", fold_id)):
+        if value is not None:
+            run_params[key] = value
+
+    collision = set(params) & set(extra_params)
+    if collision:
+        raise ValueError(f"extra_params keys collide with params: {sorted(collision)}")
+    run_params.update(extra_params)
+
+    run_tags = dict(tags)
+    for key, value in (("trial_id", trial_id), ("fold_id", fold_id)):
+        if value is not None:
+            run_tags.setdefault(key, value)
 
     if experiment_name is not None:
         mlflow_run_name = experiment_name
@@ -61,24 +87,52 @@ def train_gnn(
 
         if exp is None:
             try:
-                client.create_experiment(experiment_name)
+                experiment_id = client.create_experiment(experiment_name)
+                exp = client.get_experiment(experiment_id)
             except MlflowException as e:
-                pass
+                exp = client.get_experiment_by_name(experiment_name)
 
-        logger = MLFlowLogger(
+        if experiment_tags and exp is not None:
+            for key, value in experiment_tags.items():
+                try:
+                    client.set_experiment_tag(exp.experiment_id, key, str(value))
+                except MlflowException as e:
+                    pass
+
+        # Nest this run under a parent run (MLflow nested runs).
+        if parent_run_id is not None:
+            logger_tags = dict(logger_kwargs.pop("tags", None) or {})
+            logger_tags[MLFLOW_PARENT_RUN_ID] = parent_run_id
+            logger_kwargs["tags"] = logger_tags
+
+        logger = EpochMLFlowLogger(
             experiment_name=experiment_name,
             run_name=mlflow_run_name,
             **logger_kwargs,
         )
+
+        # Ensure the parent link is set even if the logger backend ignores tags.
+        if parent_run_id is not None:
+            try:
+                logger.experiment.set_tag(
+                    run_id=logger.run_id,
+                    key=MLFLOW_PARENT_RUN_ID,
+                    value=parent_run_id,
+                )
+            except MlflowException:
+                pass
+
+        # Params (immutable): hyperparameters + run-level params.
+        all_params = {**params, **run_params}
         logger.log_hyperparams(
-            {k: v for k, v in params.items() if not isinstance(v, (dict))}
+            {k: v for k, v in all_params.items() if not isinstance(v, dict)}
         )
         logger.log_hyperparams(
-            {k: json.dumps(v) for k, v in params.items() if isinstance(v, (dict))}
+            {k: json.dumps(v) for k, v in all_params.items() if isinstance(v, dict)}
         )
 
-        for k, v in to_log.items():
-            logger.log_hyperparams({k: v})
+        # Tags (filterable labels).
+        for k, v in run_tags.items():
             logger.experiment.set_tag(
                 run_id=logger.run_id,
                 key=k,
@@ -125,15 +179,33 @@ def train_gnn(
 
     trainer = L.Trainer(
         callbacks=callbacks,
-        logger=logger,
+        logger=None,
         **trainer_kwargs,
     )
+
+    if logger:
+        if logger.__class__ == EpochMLFlowLogger:
+            logger._trainer = trainer
+        trainer.logger = logger
 
     lightning_module = GNNLightningModule(
         model_cls=model_cls,
         model_kwargs=model_params,
         **li_params,
     )
+
+    if logger:
+        n_params = sum(p.numel() for p in lightning_module.model.parameters())
+        n_trainable_params = sum(
+            p.numel() for p in lightning_module.model.parameters() if p.requires_grad
+        )
+        logger.log_metrics(
+            {
+                "model/n_params": n_params,
+                "model/n_trainable_params": n_trainable_params,
+                **extra_metrics,
+            }
+        )
 
     trainer.fit(lightning_module, datamodule=data)
 
