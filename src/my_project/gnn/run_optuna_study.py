@@ -9,6 +9,7 @@ import optuna
 import pandas as pd
 from my_project.gnn.data_module import GNNDataModule
 from my_project.gnn.tuning import objective, suggest_gnn_params
+from my_project.gnn.utils import feature_indexes, feature_n_classes
 from optuna.trial import TrialState
 
 
@@ -21,9 +22,9 @@ def build_cv_datamodules(
     graphs: Sequence[Any] | None = None,
     preprocessing_pipeline=None,
     num_workers: int = 0,
-    keep_on_gpu: bool = True,
+    keep_on_gpu: bool = False,
     device: str | None = None,
-) -> dict[str, Any]:
+) -> list[tuple[GNNDataModule, dict[str, Any]]]:
     """Create one GNNDataModule per CV fold after fitting preprocessing on train only.
 
     You can pass either:
@@ -40,8 +41,7 @@ def build_cv_datamodules(
     else:
         fold_graphs = [graph] * len(folds)
 
-    data = []
-    preprocessing_pipelines = []
+    results = []
 
     for fold, fold_graph in zip(folds, fold_graphs):
         X_train = X.loc[fold["train"]]
@@ -49,11 +49,39 @@ def build_cv_datamodules(
         X_valid = X.loc[fold["valid"]]
         y_valid = y.loc[fold["valid"]]
 
+        categorical_features = X.select_dtypes(
+            include=["category", "object", "bool", "boolean"]
+        ).columns.to_list()
+
         if preprocessing_pipeline is not None:
+            # preprocessing_pipeline = copy.deepcopy(preprocessing_pipeline)
             preprocessing_pipeline.fit(X_train)
 
             X_train = preprocessing_pipeline.transform(X_train)
             X_valid = preprocessing_pipeline.transform(X_valid)
+
+        columns = list(X_train.columns)
+
+        if categorical_features:
+            categorical_features_indexes = pd.Series(
+                feature_indexes(categorical_features, columns)
+            )[categorical_features]
+            categorical_features_n_classes = pd.Series(
+                feature_n_classes(X_train[categorical_features])
+            )[categorical_features]
+
+            categorical_features_index_n_classes_map = dict(
+                zip(categorical_features_indexes, categorical_features_n_classes)
+            )
+            categorical_features_index_n_classes_map = {
+                int(idx): int(n_classes)
+                for idx, n_classes in sorted(
+                    categorical_features_index_n_classes_map.items(),
+                    key=lambda item: item[0],
+                )
+            }
+        else:
+            categorical_features_index_n_classes_map = {}
 
         data_fold = GNNDataModule(
             graph=fold_graph,
@@ -66,19 +94,23 @@ def build_cv_datamodules(
             device=device,
         )
         data_fold.setup()
-        data.append(data_fold)
-        preprocessing_pipelines.append(copy.deepcopy(preprocessing_pipeline))
+        results.append(
+            {
+                "data": data_fold,
+                "params": {
+                    "categorical_features_index_n_classes_map": categorical_features_index_n_classes_map,
+                    "n_nodes": len(columns),
+                },
+            }
+        )
 
-    return {
-        "data": data,
-        "preprocessing_pipelines": preprocessing_pipelines,
-    }
+    return results
 
 
 def run_optuna_study_for_gnn(
     *,
     model_cls,
-    data: GNNDataModule | Sequence[GNNDataModule],
+    cv_folds: dict[str, Any] | Sequence[dict[str, Any]],
     study_name: str,
     storage_url: str | None,
     n_trials: int,
@@ -88,13 +120,17 @@ def run_optuna_study_for_gnn(
     direction: str = "minimize",
     technical_settings: dict[str, Any],
     suggest_params_func: callable = suggest_gnn_params,
+    pruner: optuna.pruners.BasePruner | None = None,
 ) -> optuna.Study:
+    if pruner is None:
+        pruner = optuna.pruners.MedianPruner()
+
     study = optuna.create_study(
         direction=direction,
         study_name=study_name,
         storage=storage_url,
         load_if_exists=True,
-        pruner=optuna.pruners.MedianPruner(),
+        pruner=pruner,
     )
 
     finished_states = {TrialState.COMPLETE, TrialState.PRUNED}
@@ -108,7 +144,7 @@ def run_optuna_study_for_gnn(
         lambda trial: objective(
             trial,
             model_cls=model_cls,
-            data=data,
+            cv_folds=cv_folds,
             technical_settings=technical_settings,
             base_params=copy.deepcopy(base_params),
             suggest_params_func=suggest_params_func,
