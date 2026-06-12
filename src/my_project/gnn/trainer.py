@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 from torchmetrics import MetricCollection
 from torchmetrics.classification import (
+    BinaryAccuracy,
     BinaryAUROC,
     BinaryAveragePrecision,
     BinaryF1Score,
@@ -83,6 +84,7 @@ class GNNLightningModule(L.LightningModule):
 
         metric_collection = MetricCollection(
             {
+                "accuracy": BinaryAccuracy(threshold=self.threshold),
                 "auc": BinaryAUROC(),
                 "avg_precision": BinaryAveragePrecision(),
                 "f1": BinaryF1Score(threshold=self.threshold),
@@ -140,7 +142,12 @@ class GNNLightningModule(L.LightningModule):
             metrics["val/recall"] + metrics["val/specificity"]
         ) / 2
         metrics.pop("val/specificity")
-        self.log_dict(metrics, prog_bar=True)
+        self.log_dict(
+            metrics,
+            on_step=False,
+            on_epoch=True,
+        )
+        self.log("global_step", self.global_step, on_step=False, on_epoch=True)
         self.val_metrics.reset()
 
     def test_step(self, batch, batch_idx: int) -> None:
@@ -153,7 +160,11 @@ class GNNLightningModule(L.LightningModule):
             metrics["test/recall"] + metrics["test/specificity"]
         ) / 2
         metrics.pop("test/specificity")
-        self.log_dict(metrics)
+        self.log_dict(
+            metrics,
+            on_step=False,
+            on_epoch=True,
+        )
         self.test_metrics.reset()
 
     def on_train_epoch_end(self) -> None:
@@ -162,7 +173,13 @@ class GNNLightningModule(L.LightningModule):
             metrics["train/recall"] + metrics["train/specificity"]
         ) / 2
         metrics.pop("train/specificity")
-        self.log_dict(metrics)
+
+        self.log_dict(
+            metrics,
+            on_step=False,
+            on_epoch=True,
+            # step=self.current_epoch,
+        )
         self.train_metrics.reset()
 
     def predict_step(self, batch, batch_idx: int) -> dict:
@@ -183,7 +200,10 @@ class GNNLightningModule(L.LightningModule):
             return optimizer
 
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode=self.scheduler_monitor_mode, factor=0.5, patience=5
+            optimizer,
+            mode=self.scheduler_monitor_mode,
+            factor=0.5,
+            patience=5,
         )
         return {
             "optimizer": optimizer,
