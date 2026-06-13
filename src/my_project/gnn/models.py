@@ -21,6 +21,28 @@ TRANSFORMERS_DICT = {
 }
 
 
+def _as_hidden_dims(hidden_dim, n_layers=None, emb_dim=None):
+    """Normalize a hidden-dim spec to a list of per-layer sizes.
+
+    ``hidden_dim`` may be either an explicit list of per-layer sizes or a single
+    int repeated ``n_layers`` times (useful for grid search over a width + depth
+    pair instead of an explicit list).
+    """
+    if isinstance(hidden_dim, int):
+        if n_layers is None:
+            raise ValueError("n_layers must be provided when hidden_dim is an int")
+        if emb_dim is not None:
+            if hidden_dim != emb_dim:
+                raise ValueError(
+                    "When hidden_dim is an int and emb_dim is provided, they must be equal"
+                )
+        else:
+            emb_dim = hidden_dim
+
+        return [hidden_dim] * n_layers, emb_dim
+    return list(hidden_dim), emb_dim
+
+
 class NumericEncoder(nn.Module):
     def __init__(self, input_dim=1, hidden_dim=None, output_dim=8):
         super().__init__()
@@ -204,6 +226,7 @@ class GNN(nn.Module):
         n_nodes,
         emb_dim=8,
         hidden_dim=[8],
+        n_layers=None,
         dropout=0.3,
         heads=1,
         categorical_features_index_n_classes_map=dict(),
@@ -214,6 +237,8 @@ class GNN(nn.Module):
         ] = "GraphConv",
     ):
         super().__init__()
+
+        hidden_dim, emb_dim = _as_hidden_dims(hidden_dim, n_layers, emb_dim)
 
         if add_skip:
             for d in hidden_dim:
@@ -264,9 +289,11 @@ class MyGNN(nn.Module):
         self,
         n_nodes,
         n_classes=2,
-        mlp_hidden_dim=[16],
-        emb_dim=8,
-        conv_hidden_dim=[8],
+        emb_dim=None,
+        hidden_dim=8,
+        n_layers=1,
+        mlp_hidden_dim=16,
+        n_mlp_layers=1,
         dropout=0.3,
         numeric_features_indexes=None,
         categorical_features_index_n_classes_map=dict(),
@@ -278,6 +305,9 @@ class MyGNN(nn.Module):
         pooling_type: Literal["mean", "max"] = "mean",
     ):
         super().__init__()
+
+        hidden_dim, emb_dim = _as_hidden_dims(hidden_dim, n_layers, emb_dim)
+        mlp_hidden_dim, _ = _as_hidden_dims(mlp_hidden_dim, n_mlp_layers)
 
         self.heads = heads if conv_layer == "GATConv" else None
 
@@ -294,7 +324,7 @@ class MyGNN(nn.Module):
         self.GNN = GNN(
             n_nodes=n_nodes,
             emb_dim=emb_dim,
-            hidden_dim=conv_hidden_dim,
+            hidden_dim=hidden_dim,
             dropout=dropout,
             add_skip=add_skip,
             batch_norm=batch_norm,
@@ -302,10 +332,10 @@ class MyGNN(nn.Module):
             heads=self.heads,
         )
 
-        self.conv_hidden_dim = conv_hidden_dim
+        self.hidden_dim = hidden_dim
         self.n_nodes = n_nodes
 
-        mlp_hidden_dims = [conv_hidden_dim[-1]] + mlp_hidden_dim + [n_classes]
+        mlp_hidden_dims = [hidden_dim[-1]] + mlp_hidden_dim + [n_classes]
         self.mlp = MLP(mlp_hidden_dims, dropout)
 
         if pooling_type == "mean":
@@ -341,8 +371,9 @@ class MyMLP(nn.Module):
         self,
         n_nodes,
         n_classes=2,
-        mlp_hidden_dim=[16],
-        emb_dim=8,
+        hidden_dim=16,
+        n_layers=1,
+        emb_dim=None,
         dropout=0.3,
         numeric_features_indexes=None,
         categorical_features_index_n_classes_map=None,
@@ -352,6 +383,8 @@ class MyMLP(nn.Module):
 
         if categorical_features_index_n_classes_map is None:
             categorical_features_index_n_classes_map = dict()
+
+        hidden_dim, emb_dim = _as_hidden_dims(hidden_dim, n_layers, emb_dim)
 
         self.encode_x = EncodeX(
             n_nodes=n_nodes,
@@ -364,7 +397,7 @@ class MyMLP(nn.Module):
         self.emb_dim = emb_dim
         self.n_nodes = n_nodes
 
-        mlp_hidden_dims = [n_nodes * emb_dim] + mlp_hidden_dim + [n_classes]
+        mlp_hidden_dims = [n_nodes * emb_dim] + hidden_dim + [n_classes]
         self.mlp = MLP(mlp_hidden_dims, dropout)
 
     def forward(self, x, edge_index=None, batch=None):
