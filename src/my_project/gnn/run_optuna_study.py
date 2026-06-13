@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import itertools
 from collections.abc import Sequence
 from typing import Any
 
@@ -113,7 +114,8 @@ def run_optuna_study_for_gnn(
     cv_folds: dict[str, Any] | Sequence[dict[str, Any]],
     study_name: str,
     storage_url: str | None,
-    n_trials: int,
+    search_space: dict[str, Any],
+    n_trials: int | None = None,
     base_params: dict[str, Any] | None = None,
     show_progress_bar: bool = False,
     optuna_n_jobs: int = 1,
@@ -121,36 +123,136 @@ def run_optuna_study_for_gnn(
     technical_settings: dict[str, Any],
     suggest_params_func: callable = suggest_gnn_params,
     pruner: optuna.pruners.BasePruner | None = None,
+    sampler: optuna.samplers.BaseSampler | None = None,
 ) -> optuna.Study:
     if pruner is None:
         pruner = optuna.pruners.MedianPruner()
 
+    grid_keys = list(search_space.keys())
+    grid_distributions = {
+        key: optuna.distributions.CategoricalDistribution(values)
+        for key, values in search_space.items()
+    }
+
+    storage = optuna.storages.get_storage(storage_url)
+
+    # Optuna's storage locks each parameter's categorical choices to the values
+    # seen in the first trial. Extending the grid (e.g. adding a `dropout`
+    # value) and reusing the study would therefore raise
+    # "CategoricalDistribution does not support dynamic value space". To keep a
+    # *stable* study name and still avoid recomputing points we already
+    # evaluated, we rebuild the study in place when the grid changed: salvage
+    # every COMPLETE trial that still falls inside the new grid, drop the study,
+    # recreate it under the same name, and re-insert the salvaged trials
+    # carrying the new (wider) distributions.
+    salvaged_trials = []
+    try:
+        existing_study = optuna.load_study(study_name=study_name, storage=storage)
+    except KeyError:
+        existing_study = None
+
+    if existing_study is not None:
+        stored_distributions = {}
+        for trial in existing_study.get_trials(deepcopy=False):
+            stored_distributions.update(trial.distributions)
+
+        grid_changed = bool(stored_distributions) and any(
+            stored_distributions.get(key) != grid_distributions[key]
+            for key in grid_keys
+        )
+
+        if grid_changed:
+            for trial in existing_study.get_trials(
+                deepcopy=False, states=[TrialState.COMPLETE]
+            ):
+                if set(trial.params) == set(grid_keys) and all(
+                    trial.params[key] in search_space[key] for key in grid_keys
+                ):
+                    salvaged_trials.append(
+                        optuna.trial.create_trial(
+                            state=TrialState.COMPLETE,
+                            params=dict(trial.params),
+                            distributions=grid_distributions,
+                            value=trial.value,
+                            user_attrs=dict(trial.user_attrs),
+                        )
+                    )
+            optuna.delete_study(study_name=study_name, storage=storage)
+
     study = optuna.create_study(
         direction=direction,
         study_name=study_name,
-        storage=storage_url,
+        storage=storage,
         load_if_exists=True,
         pruner=pruner,
+        sampler=sampler,
     )
 
-    finished_states = {TrialState.COMPLETE, TrialState.PRUNED}
-    finished_trials = sum(1 for trial in study.trials if trial.state in finished_states)
-    remaining_trials = max(0, n_trials - finished_trials)
+    for salvaged_trial in salvaged_trials:
+        study.add_trial(salvaged_trial)
 
-    if remaining_trials == 0:
-        return study
+    if n_trials is None:
+        # --- Exhaustive grid mode (resumable) ---
+        # We do not rely on GridSampler's own resume logic: it keys "visited"
+        # cells on an exact search-space match, so extending the grid (changing
+        # the length of any dimension) makes it forget every past trial and
+        # re-run the whole grid, duplicates included. Instead we build the grid
+        # ourselves from `search_space`, skip combinations already covered by a
+        # COMPLETE trial, and explicitly enqueue only the missing ones. This
+        # lets us extend the grid and continue, and retries failed combinations.
+        all_combinations = [
+            dict(zip(grid_keys, values))
+            for values in itertools.product(*search_space.values())
+        ]
+
+        def _combo_key(params: dict[str, Any]) -> tuple:
+            return tuple(params[key] for key in grid_keys)
+
+        completed = {
+            _combo_key(trial.params)
+            for trial in study.trials
+            if trial.state == TrialState.COMPLETE
+            and all(key in trial.params for key in grid_keys)
+        }
+
+        missing_combinations = [
+            combo for combo in all_combinations if _combo_key(combo) not in completed
+        ]
+
+        if not missing_combinations:
+            return study
+
+        for combo in missing_combinations:
+            study.enqueue_trial(combo, skip_if_exists=True)
+
+        n_trials_to_run = len(missing_combinations)
+    else:
+        # --- Sampling mode (TPE / Random / CMA-ES / ...) ---
+        # The sampler draws points from the same categorical choices, so
+        # `search_space` still defines the space; `n_trials` is the budget.
+        # Resuming counts already-finished trials toward that budget.
+        finished_trials = sum(
+            1
+            for trial in study.trials
+            if trial.state in {TrialState.COMPLETE, TrialState.PRUNED}
+        )
+        n_trials_to_run = max(0, n_trials - finished_trials)
+
+        if n_trials_to_run == 0:
+            return study
 
     study.optimize(
         lambda trial: objective(
             trial,
             model_cls=model_cls,
             cv_folds=cv_folds,
+            search_space=search_space,
             technical_settings=technical_settings,
             base_params=copy.deepcopy(base_params),
             suggest_params_func=suggest_params_func,
         ),
         n_jobs=optuna_n_jobs,
-        n_trials=remaining_trials,
+        n_trials=n_trials_to_run,
         show_progress_bar=show_progress_bar,
         gc_after_trial=True,
     )
