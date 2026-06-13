@@ -33,6 +33,7 @@ def train_gnn(
     early_stopping_kwargs: Optional[dict] = None,
     logger_kwargs: Optional[dict] = None,
     parent_run_id: Optional[str] = None,
+    log_params: bool = True,
 ):
     extra_params = {} if extra_params is None else extra_params.copy()
     tags = {} if tags is None else tags.copy()
@@ -60,17 +61,24 @@ def train_gnn(
     experiment_tags = logger_kwargs.pop("experiment_tags", None)
 
     # Collect run-level params, tags and metrics from the explicit dicts.
-    run_params = {}
+    # `model_cls` is logged as a param (its name) so it can be used as a chart
+    # axis; `conv_layer` is additionally surfaced as a tag for filtering.
+    run_params = {"model_cls": model_cls.__name__}
     for key, value in (("trial_id", trial_id), ("fold_id", fold_id)):
         if value is not None:
             run_params[key] = value
 
-    collision = set(params) & set(extra_params)
-    if collision:
-        raise ValueError(f"extra_params keys collide with params: {sorted(collision)}")
+    if log_params:
+        collision = set(params) & set(extra_params)
+        if collision:
+            raise ValueError(
+                f"extra_params keys collide with params: {sorted(collision)}"
+            )
     run_params.update(extra_params)
 
     run_tags = dict(tags)
+    if "conv_layer" in params:
+        run_tags.setdefault("conv_layer", params["conv_layer"])
     for key, value in (("trial_id", trial_id), ("fold_id", fold_id)):
         if value is not None:
             run_tags.setdefault(key, value)
@@ -123,7 +131,9 @@ def train_gnn(
                 pass
 
         # Params (immutable): hyperparameters + run-level params.
-        all_params = {**params, **run_params}
+        # When log_params is False (e.g. nested CV folds), the shared
+        # hyperparameters live on the parent run, so only log run-level params.
+        all_params = {**params, **run_params} if log_params else dict(run_params)
         logger.log_hyperparams(
             {k: v for k, v in all_params.items() if not isinstance(v, dict)}
         )
@@ -199,13 +209,15 @@ def train_gnn(
         n_trainable_params = sum(
             p.numel() for p in lightning_module.model.parameters() if p.requires_grad
         )
-        logger.log_metrics(
-            {
-                "model/n_params": n_params,
-                "model/n_trainable_params": n_trainable_params,
-                **extra_metrics,
-            }
-        )
+        run_metrics = {
+            "model/n_params": n_params,
+            "model/n_trainable_params": n_trainable_params,
+            **extra_metrics,
+        }
+        logger.log_metrics(run_metrics)
+        # Expose run-level metrics so callers (e.g. CV objective) can aggregate
+        # them onto a parent run without re-deriving the names here.
+        trainer.logged_run_metrics = {k: float(v) for k, v in run_metrics.items()}
 
     trainer.fit(lightning_module, datamodule=data)
 
