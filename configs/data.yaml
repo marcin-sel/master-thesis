@@ -5,9 +5,6 @@ paths:
   discretized_data_path: "DaneLBBB&RBBB/DaneMed_discretized.pkl"
   split_indices_path: "DaneLBBB&RBBB/train_valid_test_split_indices.pkl"
   crossval_indices_path: "DaneLBBB&RBBB/crossval_indices.pkl"
-columns:
-  id: "Id"
-  target: "zgon_binary"
 preprocessing:
   split:
     train: 0.7
