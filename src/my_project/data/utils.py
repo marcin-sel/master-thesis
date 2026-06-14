@@ -1,4 +1,23 @@
+import importlib.util
+import os
+
 import numpy as np
+
+
+def load_column_config(configs_dir=None):
+    """Load ``configs/columns.py`` as a module (column whitelists)."""
+    configs_dir = configs_dir or os.environ["CONFIGS_DIR"]
+    path = os.path.join(configs_dir, "columns.py")
+    spec = importlib.util.spec_from_file_location("project_columns", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def select_modeling_features(df, configs_dir=None):
+    """Return the ``MODELING_FEATURES`` columns present in ``df`` (df order kept)."""
+    features = set(load_column_config(configs_dir).MODELING_FEATURES)
+    return df[[c for c in df.columns if c in features]]
 
 
 def columns_info_func(df, sort_by_column="missing_pct", ascending=False):
