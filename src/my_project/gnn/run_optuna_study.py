@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import itertools
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import numpy as np
@@ -12,6 +12,7 @@ from my_project.gnn.data_module import GNNDataModule
 from my_project.gnn.tuning import objective, suggest_gnn_params
 from my_project.gnn.utils import feature_indexes, feature_n_classes
 from optuna.trial import TrialState
+from sklearn.pipeline import Pipeline
 
 
 def build_cv_datamodules(
@@ -21,6 +22,8 @@ def build_cv_datamodules(
     folds: Sequence[dict[str, Any]],
     graph: Any | None = None,
     graphs: Sequence[Any] | None = None,
+    graph_builder: Callable[[pd.DataFrame, pd.Series], Any] | None = None,
+    graph_preprocessing_pipeline=None,
     preprocessing_pipeline=None,
     num_workers: int = 0,
     keep_on_gpu: bool = False,
@@ -28,10 +31,37 @@ def build_cv_datamodules(
 ) -> list[tuple[GNNDataModule, dict[str, Any]]]:
     """Create one GNNDataModule per CV fold after fitting preprocessing on train only.
 
-    You can pass either:
+    You can pass exactly one of:
     - graph: one graph reused for all folds
     - graphs: a sequence of graphs with the same length as folds
+    - graph_builder: a callable ``(X_train, y_train) -> graph`` invoked once per
+      fold so the graph is learned from train data only. By default it receives
+      the same *preprocessed* training slice the model sees. Pass
+      ``graph_preprocessing_pipeline`` to instead feed it a separately processed
+      view of the fold's raw training rows (e.g. a discretizer, since
+      interaction-information builders need discrete inputs); the pipeline is
+      fit on train only and the resulting graph's nodes still line up with the
+      model features because both share the same column names.
     """
+
+    provided = [
+        name
+        for name, value in (
+            ("graph", graph),
+            ("graphs", graphs),
+            ("graph_builder", graph_builder),
+        )
+        if value is not None
+    ]
+    if len(provided) > 1:
+        raise ValueError(
+            f"Pass only one of graph/graphs/graph_builder, got: {provided}."
+        )
+
+    if graph_preprocessing_pipeline is not None and graph_builder is None:
+        raise ValueError(
+            "graph_preprocessing_pipeline requires graph_builder to be set."
+        )
 
     if graphs is not None:
         fold_graphs = list(graphs)
@@ -44,22 +74,57 @@ def build_cv_datamodules(
 
     results = []
 
-    for fold, fold_graph in zip(folds, fold_graphs):
+    for fold_index, fold in enumerate(folds):
         X_train = X.loc[fold["train"]]
         y_train = y.loc[fold["train"]]
         X_valid = X.loc[fold["valid"]]
         y_valid = y.loc[fold["valid"]]
 
-        categorical_features = X.select_dtypes(
-            include=["category", "object", "bool", "boolean"]
-        ).columns.to_list()
+        # Build the graph from the raw train slice (before the model's
+        # preprocessing rescales it) when a dedicated graph pipeline is given.
+        X_train_graph = X_train
+        if graph_preprocessing_pipeline is not None:
+            graph_preprocessing_pipeline.fit(X_train)
+            X_train_graph = graph_preprocessing_pipeline.transform(X_train)
+
+        categorical_dtypes = ["category", "object", "bool", "boolean"]
 
         if preprocessing_pipeline is not None:
             # preprocessing_pipeline = copy.deepcopy(preprocessing_pipeline)
             preprocessing_pipeline.fit(X_train)
 
-            X_train = preprocessing_pipeline.transform(X_train)
-            X_valid = preprocessing_pipeline.transform(X_valid)
+            # Detect categorical features from the preprocessed-but-not-encoded
+            # view, so quantile-binned high-missing columns (now categorical
+            # with a "Missing" level) are recognized alongside the original
+            # categoricals before the encoder turns everything into integers.
+            if "encoder" in preprocessing_pipeline.named_steps:
+                pre_encoder = Pipeline(preprocessing_pipeline.steps[:-1])
+                encoder = preprocessing_pipeline.named_steps["encoder"]
+                X_train_pre = pre_encoder.transform(X_train)
+                X_valid_pre = pre_encoder.transform(X_valid)
+                categorical_features = X_train_pre.select_dtypes(
+                    include=categorical_dtypes
+                ).columns.to_list()
+                X_train = encoder.transform(X_train_pre)
+                X_valid = encoder.transform(X_valid_pre)
+            else:
+                X_train = preprocessing_pipeline.transform(X_train)
+                X_valid = preprocessing_pipeline.transform(X_valid)
+                categorical_features = X_train.select_dtypes(
+                    include=categorical_dtypes
+                ).columns.to_list()
+        else:
+            categorical_features = X.select_dtypes(
+                include=categorical_dtypes
+            ).columns.to_list()
+
+        if graph_builder is not None:
+            graph_input = (
+                X_train_graph if graph_preprocessing_pipeline is not None else X_train
+            )
+            fold_graph = graph_builder(graph_input, y_train)
+        else:
+            fold_graph = fold_graphs[fold_index]
 
         columns = list(X_train.columns)
 
@@ -101,6 +166,7 @@ def build_cv_datamodules(
                 "params": {
                     "categorical_features_index_n_classes_map": categorical_features_index_n_classes_map,
                     "n_nodes": len(columns),
+                    "n_edges": fold_graph.number_of_edges(),
                 },
             }
         )
@@ -124,6 +190,8 @@ def run_optuna_study_for_gnn(
     suggest_params_func: callable = suggest_gnn_params,
     pruner: optuna.pruners.BasePruner | None = None,
     sampler: optuna.samplers.BaseSampler | None = None,
+    callbacks: Sequence[Callable[[optuna.Study, optuna.trial.FrozenTrial], None]]
+    | None = None,
 ) -> optuna.Study:
     if pruner is None:
         pruner = optuna.pruners.MedianPruner()
@@ -255,6 +323,7 @@ def run_optuna_study_for_gnn(
         n_trials=n_trials_to_run,
         show_progress_bar=show_progress_bar,
         gc_after_trial=True,
+        callbacks=callbacks,
     )
     return study
 

@@ -247,6 +247,20 @@ def objective(
             if trial.should_prune():
                 raise optuna.TrialPruned()
 
+        # Aggregate per-fold metrics into trial-level means so callbacks (e.g. a
+        # progress bar) and other consumers can read them straight from the
+        # trial, independent of whether MLflow logging is enabled.
+        if fold_metrics:
+            metric_names = {name for fold in fold_metrics for name in fold}
+            mean_metrics = {}
+            for metric_name in metric_names:
+                values = [
+                    fold[metric_name] for fold in fold_metrics if metric_name in fold
+                ]
+                if values:
+                    mean_metrics[metric_name] = float(np.mean(values))
+            trial.set_user_attr("mean_metrics", mean_metrics)
+
         # Log aggregated metrics on the parent run.
         if mlflow_client is not None and parent_run_id is not None and fold_scores:
             valid_epochs = [e for e in fold_best_epochs if e is not None]
