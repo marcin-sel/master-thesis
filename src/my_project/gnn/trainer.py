@@ -4,6 +4,7 @@ from typing import Optional
 import lightning as L
 import torch
 import torch.nn as nn
+from my_project.gnn import models as _models
 from torchmetrics import MetricCollection
 from torchmetrics.classification import (
     BinaryAccuracy,
@@ -14,6 +15,19 @@ from torchmetrics.classification import (
     BinaryRecall,
     BinarySpecificity,
 )
+
+# PyTorch >= 2.6 domyślnie ładuje checkpointy z ``weights_only=True``, co blokuje
+# odpicklowanie referencji do klas modeli zapisanych w hiperparametrach
+# (``save_hyperparameters`` zapisuje m.in. ``model_cls``). Rejestrujemy wszystkie
+# klasy modeli jako bezpieczne globale raz, przy imporcie modułu, dzięki czemu
+# ``trainer.test(ckpt_path=...)`` i ``load_from_checkpoint`` działają globalnie.
+_model_classes = [
+    obj
+    for obj in vars(_models).values()
+    if isinstance(obj, type) and issubclass(obj, nn.Module)
+]
+if _model_classes:
+    torch.serialization.add_safe_globals(_model_classes)
 
 
 class GNNLightningModule(L.LightningModule):

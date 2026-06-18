@@ -4,7 +4,11 @@ from inspect import signature
 from typing import Optional
 
 import lightning as L
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+from lightning.pytorch.callbacks import (
+    EarlyStopping,
+    LearningRateMonitor,
+    ModelCheckpoint,
+)
 from lightning.pytorch.loggers import MLFlowLogger
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
@@ -34,6 +38,7 @@ def train_gnn(
     logger_kwargs: Optional[dict] = None,
     parent_run_id: Optional[str] = None,
     log_params: bool = True,
+    run_name: Optional[str] = None,
 ):
     extra_params = {} if extra_params is None else extra_params.copy()
     tags = {} if tags is None else tags.copy()
@@ -84,11 +89,14 @@ def train_gnn(
             run_tags.setdefault(key, value)
 
     if experiment_name is not None:
-        mlflow_run_name = experiment_name
-        if trial_id is not None:
-            mlflow_run_name = f"{mlflow_run_name}_trial_{trial_id}"
-        if fold_id is not None:
-            mlflow_run_name = f"{mlflow_run_name}_fold_{fold_id}"
+        if run_name is not None:
+            mlflow_run_name = run_name
+        else:
+            mlflow_run_name = experiment_name
+            if trial_id is not None:
+                mlflow_run_name = f"{mlflow_run_name}_trial_{trial_id}"
+            if fold_id is not None:
+                mlflow_run_name = f"{mlflow_run_name}_fold_{fold_id}"
 
         client = MlflowClient(tracking_uri=logger_kwargs.get("tracking_uri", None))
         exp = client.get_experiment_by_name(experiment_name)
@@ -182,9 +190,12 @@ def train_gnn(
         **early_stopping_kwargs,
     )
 
+    lr_monitor_callback = LearningRateMonitor(logging_interval="epoch")
+
     callbacks = [
         early_stopping_callback,
         checkpoint_callback,
+        lr_monitor_callback,
     ]
 
     trainer = L.Trainer(
