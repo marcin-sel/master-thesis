@@ -44,17 +44,19 @@ def _as_hidden_dims(hidden_dim, n_layers=None, emb_dim=None):
 
 
 class NumericEncoder(nn.Module):
-    def __init__(self, input_dim=1, hidden_dim=None, output_dim=8):
+    def __init__(
+        self, input_dim=1, hidden_dims=None, dropout=None, batch_norm=True, output_dim=8
+    ):
         super().__init__()
         dims = [input_dim]
-        if hidden_dim is not None:
-            dims = dims + [hidden_dim]
+
+        if hidden_dims is not None:
+            if isinstance(hidden_dims, int):
+                hidden_dims = [hidden_dims]
+            dims = dims + hidden_dims
         dims = dims + [output_dim]
 
-        self.mlp = nn.Sequential()
-        for in_channels, out_channels in zip(dims[:-1], dims[1:]):
-            self.mlp.append(nn.Linear(in_channels, out_channels))
-            self.mlp.append(nn.ReLU())
+        self.mlp = MLP(dims, dropout=dropout, activation="relu", batch_norm=batch_norm)
 
     def forward(self, x):
         return self.mlp(x)
@@ -68,6 +70,9 @@ class EncodeX(nn.Module):
         num_emb_hidden=None,
         numeric_features_indexes=None,
         categorical_features_index_n_classes_map=None,
+        layer_norm=True,
+        num_dropout=None,
+        num_batch_norm=True,
     ):
         super().__init__()
 
@@ -105,11 +110,20 @@ class EncodeX(nn.Module):
         self.num_embeddings = nn.ModuleDict(
             {
                 str(idx): NumericEncoder(
-                    input_dim=1, hidden_dim=num_emb_hidden, output_dim=emb_dim
+                    input_dim=1,
+                    hidden_dims=num_emb_hidden,
+                    dropout=num_dropout,
+                    batch_norm=num_batch_norm,
+                    output_dim=emb_dim,
                 )
                 for idx in self.numeric_features_indexes
             }
         )
+
+        if layer_norm:
+            self.layer_norm = nn.LayerNorm(emb_dim)
+        else:
+            self.layer_norm = None
 
     def forward(self, x):
         x_raw = x
@@ -145,6 +159,9 @@ class EncodeX(nn.Module):
                 dtype=x.dtype
             )
 
+        # if self.layer_norm is not None:
+        #     x_2d = self.layer_norm(x_2d)
+
         return x
 
 
@@ -170,10 +187,11 @@ class MLP(nn.Module):
         for i, (in_features, out_features) in enumerate(zip(dims[:-1], dims[1:])):
             layers.append(nn.Linear(in_features, out_features))
             if i < len(dims) - 2:
-                layers.append(activation_layer())
-                layers.append(nn.Dropout(dropout))
                 if batch_norm:
                     layers.append(nn.BatchNorm1d(out_features))
+                layers.append(activation_layer())
+                if dropout is not None:
+                    layers.append(nn.Dropout(dropout))
 
         self.mlp = nn.Sequential(*layers)
 
@@ -195,28 +213,47 @@ class SingleConvLayer(nn.Module):
         super().__init__()
 
         self.heads = heads
+        self.add_skip = add_skip
 
         if conv_layer == GATConv and heads is not None:
-            self.conv = conv_layer(in_channels, out_channels, heads=heads)
+            self.conv = conv_layer(
+                in_channels,
+                out_channels,
+                heads=heads,
+                concat=False,
+                dropout=dropout,
+            )
+            conv_out_channels = out_channels
         else:
             self.conv = conv_layer(in_channels, out_channels)
+            conv_out_channels = out_channels
 
-        self.batch_norm = nn.BatchNorm1d(out_channels) if batch_norm else None
+        self.batch_norm = nn.BatchNorm1d(conv_out_channels) if batch_norm else None
 
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
-        self.add_skip = add_skip
+
+        if self.add_skip and in_channels != conv_out_channels:
+            self.skip_proj = nn.Linear(in_channels, conv_out_channels)
+        else:
+            self.skip_proj = None
 
     def forward(self, x, edge_index):
-        if self.add_skip:
-            x_skip = x
+        x_skip = x
+
         x = self.conv(x, edge_index)
-        if self.batch_norm:
+
+        if self.batch_norm is not None:
             x = self.batch_norm(x)
+
         x = self.relu(x)
         x = self.dropout(x)
+
         if self.add_skip:
+            if self.skip_proj is not None:
+                x_skip = self.skip_proj(x_skip)
             x = x + x_skip
+
         return x
 
 
@@ -247,7 +284,7 @@ class GNN(nn.Module):
                         "For add_skip=True, all hidden_dim values must be equal to emb_dim"
                     )
 
-        self.heads = heads if conv_layer == "GATConv" else None
+        self.heads = heads if conv_layer == "GATConv" and heads is not None else 1
 
         self.n_nodes = n_nodes
         self.hidden_dim = hidden_dim
@@ -292,7 +329,7 @@ class MyGNN(nn.Module):
         emb_dim=None,
         hidden_dim=8,
         n_layers=1,
-        mlp_hidden_dim=16,
+        mlp_hidden_dim=None,
         n_mlp_layers=1,
         dropout=0.3,
         numeric_features_indexes=None,
@@ -307,9 +344,12 @@ class MyGNN(nn.Module):
         super().__init__()
 
         hidden_dim, emb_dim = _as_hidden_dims(hidden_dim, n_layers, emb_dim)
+
+        if mlp_hidden_dim is None:
+            mlp_hidden_dim = []
         mlp_hidden_dim, _ = _as_hidden_dims(mlp_hidden_dim, n_mlp_layers)
 
-        self.heads = heads if conv_layer == "GATConv" else None
+        self.heads = heads if conv_layer == "GATConv" and heads is not None else 1
 
         self.encode_x = EncodeX(
             n_nodes=n_nodes,
