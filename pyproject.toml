@@ -31,6 +31,8 @@ dependencies = [
     "torchinfo (>=1.8.0,<2.0.0)",
     "transformers (>=5.10.2,<6.0.0)",
     "pyitlib (>=0.3.1,<0.4.0)",
+    "lattices @ git+https://github.com/dit/lattices.git",
+    "dit @ git+https://github.com/dit/dit.git",
 ]
 
 
