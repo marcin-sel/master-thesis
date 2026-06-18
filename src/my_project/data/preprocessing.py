@@ -83,7 +83,7 @@ class NaNPreservingKBinsDiscretizer(BaseEstimator, TransformerMixin):
                 continue
 
             mask = X[col].notna()
-            transformed = discretizer.transform(X.loc[mask, [col]]).ravel()
+            transformed = np.asarray(discretizer.transform(X.loc[mask, [col]])).ravel()
 
             n_bins = (
                 int(discretizer.n_bins_[0])
@@ -204,5 +204,136 @@ class ThresholdImputer(BaseEstimator, TransformerMixin):
 
         for col, dtype in self.cols_to_impute_dtypes_.items():
             X[col] = X[col].astype(dtype)
+
+        return X
+
+
+class HighMissingDiscretizer(BaseEstimator, TransformerMixin):
+    """Quantile-bin numeric columns with high missingness, keeping "missing" as a category.
+
+    Numeric columns whose train-set missing fraction exceeds ``threshold`` are
+    discretized into ``n_bins`` quantile bins (NaN preserved during binning);
+    their missing values are then replaced by ``missing_label``, so the column
+    becomes a categorical feature with levels ``{missing_label, <bin labels>}``.
+    This encodes missingness as an explicit, informative category without adding
+    separate indicator columns, so every downstream model consumes the same
+    representation. Columns at or below the threshold pass through unchanged.
+
+    The high-missing columns are selected from the data seen in :meth:`fit`
+    (train only), so no information leaks from validation/test rows.
+
+    Parameters
+    ----------
+    threshold : float
+        Minimum missing fraction (e.g. 0.10 = 10%) for a numeric column to be
+        discretized.
+    n_bins : int
+        Number of quantile bins for the non-missing values.
+    strategy, quantile_method :
+        Forwarded to the underlying KBinsDiscretizer.
+    missing_label : str
+        Category assigned to missing values.
+    labels_dict : dict or None
+        Optional mapping ``{n_bins: {bin_index: label}}`` for bin labels.
+    """
+
+    def __init__(
+        self,
+        threshold: float = 0.10,
+        n_bins: int = 5,
+        strategy: str = "quantile",
+        quantile_method: str = "averaged_inverted_cdf",
+        missing_label: str = "Missing",
+        labels_dict=None,
+    ):
+        self.threshold = threshold
+        self.n_bins = n_bins
+        self.strategy = strategy
+        self.quantile_method = quantile_method
+        self.missing_label = missing_label
+        self.labels_dict = labels_dict
+
+    def fit(self, X, y=None):
+        X = pd.DataFrame(X)
+        numeric_cols = X.select_dtypes(include=["number"]).columns
+        missing_rate = X[numeric_cols].isna().mean()
+        self.columns_ = missing_rate[missing_rate > self.threshold].index.tolist()
+
+        if self.columns_:
+            self.discretizer_ = NaNPreservingKBinsDiscretizer(
+                n_bins=self.n_bins,
+                strategy=self.strategy,
+                quantile_method=self.quantile_method,
+                columns=self.columns_,
+                labels_dict=self.labels_dict,
+            ).fit(X)
+        else:
+            self.discretizer_ = None
+
+        return self
+
+    def transform(self, X):
+        X = pd.DataFrame(X).copy()
+
+        if not self.columns_:
+            return X
+
+        X = self.discretizer_.transform(X)
+        for col in self.columns_:
+            filled = X[col].where(X[col].notna(), self.missing_label)
+            X[col] = filled.astype("category")
+
+        return X
+
+
+class BooleanMissingEncoder(BaseEstimator, TransformerMixin):
+    """Encode missing values in boolean columns as an explicit "Missing" level.
+
+    Boolean columns whose train-set missing fraction exceeds ``threshold`` are
+    turned into a 3-level categorical ``{False, True, missing_label}`` instead of
+    being imputed, so a high rate of missingness is preserved as an informative
+    category (mirroring :class:`HighMissingDiscretizer` for numeric columns).
+    Columns at or below the threshold are left untouched (they are expected to be
+    imputed by a preceding step), so fully observed booleans pass through
+    unchanged.
+
+    The high-missing columns are selected from the data seen in :meth:`fit`
+    (train only), so no information leaks from validation/test rows.
+
+    Parameters
+    ----------
+    threshold : float
+        Minimum missing fraction (e.g. 0.10 = 10%) for a boolean column to be
+        encoded with an explicit missing level instead of being imputed.
+    missing_label : str
+        Category assigned to missing values.
+    """
+
+    def __init__(self, threshold: float = 0.10, missing_label: str = "Missing"):
+        self.threshold = threshold
+        self.missing_label = missing_label
+
+    def fit(self, X, y=None):
+        X = pd.DataFrame(X)
+        missing_rate = X.isna().mean()
+        self.columns_ = missing_rate[missing_rate > self.threshold].index.tolist()
+        # Pin a fixed, complete category set so the output dtype is stable across
+        # folds/splits: a validation slice that happens to lack a level (e.g. no
+        # missing, or only one boolean value) still gets the same categories
+        # instead of an inconsistently-typed column.
+        self.dtype_ = pd.CategoricalDtype(
+            categories=["False", "True", self.missing_label]
+        )
+        return self
+
+    def transform(self, X):
+        X = pd.DataFrame(X).copy()
+
+        for col in self.columns_:
+            # Cast to str so the levels ("True"/"False"/"Missing") are mutually
+            # sortable; a category mixing bool and str breaks the downstream
+            # OrdinalEncoder. The fixed dtype keeps categories consistent.
+            filled = X[col].astype(object).where(X[col].notna(), self.missing_label)
+            X[col] = filled.astype(str).astype(self.dtype_)
 
         return X

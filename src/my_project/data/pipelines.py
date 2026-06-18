@@ -1,10 +1,16 @@
-from my_project.data.preprocessing import RareCategoryTransformer, ThresholdImputer
+from my_project.data.preprocessing import (
+    BooleanMissingEncoder,
+    HighMissingDiscretizer,
+    RareCategoryTransformer,
+    ThresholdImputer,
+)
 from sklearn.compose import ColumnTransformer
 from sklearn.compose import make_column_selector as selector
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import (
     FunctionTransformer,
+    KBinsDiscretizer,
     OrdinalEncoder,
     StandardScaler,
 )
@@ -13,6 +19,9 @@ from sklearn.preprocessing import (
 def shift_to_non_negative(x):
     return x + 1
 
+
+high_missing_threshold = 0.10
+high_missing_n_bins = 3
 
 dtypes_dict = {
     "number": ["number"],
@@ -44,9 +53,20 @@ categorical_pipeline = Pipeline(
 
 boolean_pipeline = Pipeline(
     [
+        # Low-missing booleans: impute with the mode (keeps the nullable
+        # ``boolean`` dtype, so downstream dtype routing still treats them as
+        # categorical instead of continuous numbers).
         (
             "threshold_imputer",
-            ThresholdImputer(threshold=0.02, strategy="most_frequent"),
+            ThresholdImputer(
+                threshold=high_missing_threshold, strategy="most_frequent"
+            ),
+        ),
+        # High-missing booleans: keep missingness as an explicit "Missing" level
+        # instead of imputing, mirroring the numeric HighMissingDiscretizer.
+        (
+            "high_missing_encoder",
+            BooleanMissingEncoder(threshold=high_missing_threshold),
         ),
     ]
 )
@@ -99,15 +119,58 @@ encoder_transformer = ColumnTransformer(
     verbose_feature_names_out=False,
 )
 
+
 preprocessing_pipeline = Pipeline(
     [
+        (
+            "high_missing_discretizer",
+            HighMissingDiscretizer(
+                threshold=high_missing_threshold, n_bins=high_missing_n_bins
+            ),
+        ),
         ("preprocessing", preprocessor_transformer),
     ]
 )
 
 preprocessing_pipeline_nn = Pipeline(
     [
+        (
+            "high_missing_discretizer",
+            HighMissingDiscretizer(
+                threshold=high_missing_threshold, n_bins=high_missing_n_bins
+            ),
+        ),
         ("preprocessing", preprocessor_transformer),
         ("encoder", encoder_transformer),
+    ]
+)
+
+discretizer_transformer = ColumnTransformer(
+    [
+        (
+            "num",
+            KBinsDiscretizer(
+                n_bins=3,
+                encode="ordinal",
+                strategy="quantile",
+                quantile_method="averaged_inverted_cdf",
+            ),
+            selector(dtype_include=dtypes_dict["number"]),
+        ),
+    ],
+    remainder="passthrough",
+    verbose_feature_names_out=False,
+)
+
+discretization_pipeline = Pipeline(
+    [
+        (
+            "high_missing_discretizer",
+            HighMissingDiscretizer(
+                threshold=high_missing_threshold, n_bins=high_missing_n_bins
+            ),
+        ),
+        ("preprocessing", preprocessor_transformer),
+        ("discretizer", discretizer_transformer),
     ]
 )
