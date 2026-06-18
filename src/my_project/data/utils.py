@@ -2,6 +2,7 @@ import importlib.util
 import os
 
 import numpy as np
+from sklearn.model_selection import train_test_split
 
 
 def load_column_config(configs_dir=None):
@@ -55,3 +56,26 @@ def columns_info_func(df, sort_by_column="missing_pct", ascending=False):
     )
 
     return columns_info
+
+
+def split_data(X, y, random_state=42, train_size=0.7, valid_size=0.10, test_size=0.20):
+    X_trainval, X_test, y_trainval, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state, stratify=y
+    )
+    X_train, X_valid, y_train, y_valid = train_test_split(
+        X_trainval,
+        y_trainval,
+        test_size=valid_size / (train_size + valid_size),
+        random_state=random_state,
+        stratify=y_trainval,
+    )
+    return X_train, X_valid, X_test, y_train, y_valid, y_test
+
+
+def shuffle_X(X, pct, seed):
+    X_shuffled = X.copy()
+    rng = np.random.default_rng(seed)
+    for col in X.columns:
+        mask = rng.random(len(X)) < pct
+        X_shuffled.loc[mask, col] = rng.permutation(X_shuffled.loc[mask, col].values)
+    return X_shuffled
