@@ -42,6 +42,12 @@ def build_cv_datamodules(
       interaction-information builders need discrete inputs); the pipeline is
       fit on train only and the resulting graph's nodes still line up with the
       model features because both share the same column names.
+
+    A fold may optionally carry a ``"test"`` index in addition to ``"train"``
+    and ``"valid"``. When present it is transformed with that fold's own
+    train-fitted preprocessing and attached to the fold's GNNDataModule so a
+    final "test the winner" step can evaluate without touching train/valid.
+    Folds without a ``"test"`` key carry no test set (current default).
     """
 
     provided = [
@@ -80,6 +86,12 @@ def build_cv_datamodules(
         X_valid = X.loc[fold["valid"]]
         y_valid = y.loc[fold["valid"]]
 
+        # A test slice is optional per fold; pull it from the raw frame so it
+        # gets this fold's own train-fitted preprocessing below.
+        test_index = fold.get("test")
+        X_test = X.loc[test_index] if test_index is not None else None
+        y_test = y.loc[test_index] if test_index is not None else None
+
         # Build the graph from the raw train slice (before the model's
         # preprocessing rescales it) when a dedicated graph pipeline is given.
         X_train_graph = X_train
@@ -107,9 +119,13 @@ def build_cv_datamodules(
                 ).columns.to_list()
                 X_train = encoder.transform(X_train_pre)
                 X_valid = encoder.transform(X_valid_pre)
+                if X_test is not None:
+                    X_test = encoder.transform(pre_encoder.transform(X_test))
             else:
                 X_train = preprocessing_pipeline.transform(X_train)
                 X_valid = preprocessing_pipeline.transform(X_valid)
+                if X_test is not None:
+                    X_test = preprocessing_pipeline.transform(X_test)
                 categorical_features = X_train.select_dtypes(
                     include=categorical_dtypes
                 ).columns.to_list()
@@ -155,6 +171,8 @@ def build_cv_datamodules(
             y_train=y_train,
             X_valid=X_valid,
             y_valid=y_valid,
+            X_test=X_test,
+            y_test=y_test,
             num_workers=num_workers,
             keep_on_gpu=keep_on_gpu,
             device=device,
@@ -188,6 +206,7 @@ def run_optuna_study_for_gnn(
     direction: str = "minimize",
     technical_settings: dict[str, Any],
     suggest_params_func: callable = suggest_gnn_params,
+    run_test: bool = True,
     pruner: optuna.pruners.BasePruner | None = None,
     sampler: optuna.samplers.BaseSampler | None = None,
     callbacks: Sequence[Callable[[optuna.Study, optuna.trial.FrozenTrial], None]]
@@ -318,6 +337,7 @@ def run_optuna_study_for_gnn(
             technical_settings=technical_settings,
             base_params=copy.deepcopy(base_params),
             suggest_params_func=suggest_params_func,
+            run_test=run_test,
         ),
         n_jobs=optuna_n_jobs,
         n_trials=n_trials_to_run,

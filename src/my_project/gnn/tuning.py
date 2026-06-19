@@ -71,6 +71,7 @@ def objective(
     technical_settings=None,
     base_params=None,
     suggest_params_func=suggest_gnn_params,
+    run_test=True,
 ):
     if technical_settings is None:
         technical_settings = {}
@@ -201,6 +202,14 @@ def objective(
                 technical_settings["monitor_kwargs"]["monitor"]
             ].item()
             fold_scores.append(best_score)
+
+            test_dataloader = data_fold.test_dataloader()
+            if run_test and test_dataloader is not None:
+                trainer.test(
+                    dataloaders=test_dataloader,
+                    ckpt_path="best",
+                    verbose=False,
+                )
 
             # Collect every numeric callback metric so the parent can hold means.
             fold_metric_values = {}
