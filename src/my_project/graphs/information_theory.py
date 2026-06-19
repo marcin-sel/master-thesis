@@ -9,6 +9,7 @@ from collections.abc import Sequence
 import networkx as nx
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
 from pyitlib import discrete_random_variable as drv
 from sklearn.preprocessing import OrdinalEncoder
 
@@ -36,6 +37,30 @@ def _mi_pair(x1: np.ndarray, x2: np.ndarray, *, estimator: str = "ML") -> float:
     return float(drv.information_mutual(x1, x2, estimator=estimator))
 
 
+def _pair_measures(
+    x1: np.ndarray,
+    x2: np.ndarray,
+    y_codes: np.ndarray | None,
+    *,
+    want_joint: bool,
+    want_feature_mi: bool,
+    estimator: str,
+) -> tuple[float | None, float | None]:
+    """Compute the per-pair measures for one ``(x1, x2)`` pair.
+
+    Returns ``(joint_mi, feature_mi)``; entries that were not requested are
+    ``None`` so an unrequested value can never be silently used as a real
+    score. This is the unit of work dispatched to each parallel job.
+    """
+    joint_mi = (
+        _mi_joint(np.vstack([x1, x2]), y_codes, estimator=estimator)
+        if want_joint
+        else None
+    )
+    feature_mi = _mi_pair(x1, x2, estimator=estimator) if want_feature_mi else None
+    return joint_mi, feature_mi
+
+
 def encode_features(X: pd.DataFrame) -> pd.DataFrame:
     """Ordinal-encode every column to integer codes pyitlib can consume.
 
@@ -55,6 +80,7 @@ def compute_information_matrices(
     measures: str | Sequence[str] = MEASURES,
     encode: bool = True,
     estimator: str = "ML",
+    n_jobs: int | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Return the requested pairwise information matrices keyed by measure name.
 
@@ -70,7 +96,9 @@ def compute_information_matrices(
     Each returned matrix is a symmetric ``DataFrame`` indexed by the columns of
     ``X`` with a zero diagonal. ``y`` is required unless ``measures`` requests
     only ``"feature_mi"``. ``estimator`` is forwarded to pyitlib. Pass a single
-    measure name to get a one-entry dict.
+    measure name to get a one-entry dict. ``n_jobs`` is forwarded to
+    :class:`joblib.Parallel`, spreading the per-pair work across processes
+    (``None``/``1`` runs serially, ``-1`` uses all cores).
     """
     if isinstance(measures, str):
         measures = (measures,)
@@ -100,6 +128,7 @@ def compute_information_matrices(
     # requested, precompute each feature's I(Xi; y) (n cheap calls) and derive
     # interaction by subtraction instead of recomputing the joint entropy.
     needs_joint = "joint_target_mi" in measures or "interaction_information" in measures
+    want_feature_mi = "feature_mi" in measures
     if "interaction_information" in measures:
         feature_target_mi = {
             column: _mi_pair(arrays[column], y_codes, estimator=estimator)
@@ -111,25 +140,36 @@ def compute_information_matrices(
         for measure in measures
     }
 
-    for i, c1 in enumerate(columns):
-        for c2 in columns[i + 1 :]:
-            x1, x2 = arrays[c1], arrays[c2]
-            if needs_joint:
-                joint_mi = _mi_joint(np.vstack([x1, x2]), y_codes, estimator=estimator)
-            if "joint_target_mi" in results:
-                results["joint_target_mi"].loc[c1, c2] = results["joint_target_mi"].loc[
-                    c2, c1
-                ] = joint_mi
-            if "interaction_information" in results:
-                value = joint_mi - feature_target_mi[c1] - feature_target_mi[c2]
-                results["interaction_information"].loc[c1, c2] = results[
-                    "interaction_information"
-                ].loc[c2, c1] = value
-            if "feature_mi" in results:
-                value = _mi_pair(x1, x2, estimator=estimator)
-                results["feature_mi"].loc[c1, c2] = results["feature_mi"].loc[
-                    c2, c1
-                ] = value
+    # All unordered feature pairs are the units of work; compute each pair's
+    # measures in parallel, then scatter the results into the matrices.
+    pairs = [(i, j) for i in range(len(columns)) for j in range(i + 1, len(columns))]
+    values = Parallel(n_jobs=n_jobs)(
+        delayed(_pair_measures)(
+            arrays[columns[i]],
+            arrays[columns[j]],
+            y_codes if needs_y else None,
+            want_joint=needs_joint,
+            want_feature_mi=want_feature_mi,
+            estimator=estimator,
+        )
+        for i, j in pairs
+    )
+
+    for (i, j), (joint_mi, feature_mi) in zip(pairs, values):
+        c1, c2 = columns[i], columns[j]
+        if "joint_target_mi" in results:
+            results["joint_target_mi"].iat[i, j] = results["joint_target_mi"].iat[
+                j, i
+            ] = joint_mi
+        if "interaction_information" in results:
+            value = joint_mi - feature_target_mi[c1] - feature_target_mi[c2]
+            results["interaction_information"].iat[i, j] = results[
+                "interaction_information"
+            ].iat[j, i] = value
+        if "feature_mi" in results:
+            results["feature_mi"].iat[i, j] = results["feature_mi"].iat[j, i] = (
+                feature_mi
+            )
 
     return results
 
@@ -205,6 +245,7 @@ class InformationGraphBuilder(GraphBuilder):
         probability: bool = True,
         estimator: str = "ML",
         matrix: pd.DataFrame | None = None,
+        n_jobs: int | None = None,
     ):
         if measure not in MEASURES:
             raise ValueError(f"measure must be one of {MEASURES}, got {measure!r}.")
@@ -214,6 +255,7 @@ class InformationGraphBuilder(GraphBuilder):
         self.probability = probability
         self.estimator = estimator
         self.matrix = matrix
+        self.n_jobs = n_jobs
 
     def _process(self, matrix: pd.DataFrame) -> pd.DataFrame:
         if self.probability:
@@ -229,6 +271,7 @@ class InformationGraphBuilder(GraphBuilder):
             measures=self.measure,
             encode=self.encode,
             estimator=self.estimator,
+            n_jobs=self.n_jobs,
         )[self.measure]
 
     def fit(
