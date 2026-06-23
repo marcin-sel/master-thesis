@@ -80,6 +80,7 @@ def compute_information_matrices(
     measures: str | Sequence[str] = MEASURES,
     encode: bool = True,
     estimator: str = "ML",
+    n_bins: int | None = None,
     n_jobs: int | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Return the requested pairwise information matrices keyed by measure name.
@@ -108,6 +109,13 @@ def compute_information_matrices(
     unknown = set(measures) - set(MEASURES)
     if unknown:
         raise ValueError(f"Unknown measures {sorted(unknown)}; choose from {MEASURES}.")
+
+    if n_bins is not None:
+        X = (
+            X.apply(pd.qcut, q=n_bins, axis=0, labels=False).copy()
+            if n_bins
+            else X.copy()
+        )
 
     if encode:
         X = encode_features(X)
@@ -242,6 +250,7 @@ class InformationGraphBuilder(GraphBuilder):
         *,
         measure: str = "interaction_information",
         encode: bool = True,
+        n_bins: int | None = None,
         probability: bool = True,
         estimator: str = "ML",
         matrix: pd.DataFrame | None = None,
@@ -252,6 +261,7 @@ class InformationGraphBuilder(GraphBuilder):
         self.threshold = threshold
         self.measure = measure
         self.encode = encode
+        self.n_bins = n_bins
         self.probability = probability
         self.estimator = estimator
         self.matrix = matrix
@@ -270,6 +280,7 @@ class InformationGraphBuilder(GraphBuilder):
             y,
             measures=self.measure,
             encode=self.encode,
+            n_bins=self.n_bins,
             estimator=self.estimator,
             n_jobs=self.n_jobs,
         )[self.measure]
