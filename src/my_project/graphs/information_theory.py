@@ -198,7 +198,10 @@ def to_probability(matrix: pd.DataFrame) -> pd.DataFrame:
     def cdf(value: float) -> float:
         return np.searchsorted(flat, value, side="right") / n
 
-    return matrix.map(cdf)
+    result = matrix.map(cdf)
+    np.fill_diagonal(result.values, 0.0)
+
+    return result
 
 
 class InformationGraphBuilder(GraphBuilder):
