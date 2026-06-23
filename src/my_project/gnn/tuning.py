@@ -108,14 +108,23 @@ def objective(
 
     fold_seeds = technical_settings.pop("fold_seeds", None)
 
-    # Create one MLflow parent run per trial so that folds become nested children.
+    n_folds = len(cv_folds)
     logger_kwargs = technical_settings.get("logger_kwargs", {})
     experiment_name = logger_kwargs.get("experiment_name")
     tracking_uri = logger_kwargs.get("tracking_uri")
 
+    settings_tags = technical_settings.get("tags", {})
+    run_name_parts = [
+        str(settings_tags.get("model_cls") or model_cls.__name__),
+        settings_tags.get("conv_layer"),
+        settings_tags.get("graph_name"),
+    ]
+    run_name_base = "__".join(str(part) for part in run_name_parts if part)
+    trial_run_name = f"{run_name_base}__trial_{trial.number}"
+
     mlflow_client = None
     parent_run_id = None
-    if experiment_name is not None:
+    if experiment_name is not None and n_folds > 1:
         mlflow_client = MlflowClient(tracking_uri=tracking_uri)
         exp = mlflow_client.get_experiment_by_name(experiment_name)
         if exp is None:
@@ -125,7 +134,7 @@ def objective(
 
         parent_run = mlflow_client.create_run(
             experiment_id=experiment_id,
-            run_name=f"{experiment_name}_trial_{trial.number}",
+            run_name=trial_run_name,
             tags={
                 "trial_id": str(trial.number),
                 "run_type": "parent",
@@ -183,12 +192,21 @@ def objective(
                 trial_id=trial.number,
                 fold_id=fold_idx,
                 tags=tags,
+                # When there are multiple folds the fold index disambiguates the
+                # children; with a single fold the trial name already stands alone.
+                run_name=(
+                    trial_run_name
+                    if n_folds == 1
+                    else f"{trial_run_name}__fold_{fold_idx}"
+                ),
                 # `graph_name` is not visible inside train_gnn, so pass it as a
-                # param to make it usable as a chart axis on the fold runs.
+                # param to make it usable as a chart axis on the fold runs. Skip
+                # any tag that is already a hyperparameter (e.g. conv_layer) to
+                # avoid the params/extra_params collision check in train_gnn.
                 extra_params={
                     key: value
                     for key, value in technical_settings.get("tags", {}).items()
-                    if value is not None
+                    if value is not None and key not in params_fold
                 },
                 parent_run_id=parent_run_id,
                 log_params=True,
@@ -300,8 +318,12 @@ def objective(
             # Trial-level mean/std for every metric. The suffixed values are
             # mirrored onto each child so that sorting by `<metric>_mean` keeps
             # the whole family (parent + folds) grouped in MLflow's flat view.
+            # With a single fold the mean equals the value and std is 0, so the
+            # `mean_`/`std_` family is redundant noise: skip it and only keep the
+            # metric under its original name on the parent.
             child_run_ids = [rid for rid in fold_run_ids if rid is not None]
             metric_names = {name for fold in fold_metrics for name in fold}
+            log_aggregates = len(fold_metrics) > 1
             for metric_name in sorted(metric_names):
                 values = [
                     fold[metric_name] for fold in fold_metrics if metric_name in fold
@@ -309,9 +331,11 @@ def objective(
                 if not values:
                     continue
                 metric_mean = float(np.mean(values))
-                metric_std = float(np.std(values))
                 # Mean under the original name (kept for backward-compat).
                 mlflow_client.log_metric(parent_run_id, metric_name, metric_mean)
+                if not log_aggregates:
+                    continue
+                metric_std = float(np.std(values))
                 for run_id in [parent_run_id, *child_run_ids]:
                     mlflow_client.log_metric(run_id, f"mean_{metric_name}", metric_mean)
                     mlflow_client.log_metric(run_id, f"std_{metric_name}", metric_std)
