@@ -16,11 +16,6 @@ from torchmetrics.classification import (
     BinarySpecificity,
 )
 
-# PyTorch >= 2.6 domyślnie ładuje checkpointy z ``weights_only=True``, co blokuje
-# odpicklowanie referencji do klas modeli zapisanych w hiperparametrach
-# (``save_hyperparameters`` zapisuje m.in. ``model_cls``). Rejestrujemy wszystkie
-# klasy modeli jako bezpieczne globale raz, przy imporcie modułu, dzięki czemu
-# ``trainer.test(ckpt_path=...)`` i ``load_from_checkpoint`` działają globalnie.
 _model_classes = [
     obj
     for obj in vars(_models).values()
