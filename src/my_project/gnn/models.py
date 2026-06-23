@@ -31,12 +31,7 @@ def _as_hidden_dims(hidden_dim, n_layers=None, emb_dim=None):
     if isinstance(hidden_dim, int):
         if n_layers is None:
             raise ValueError("n_layers must be provided when hidden_dim is an int")
-        if emb_dim is not None:
-            if hidden_dim != emb_dim:
-                raise ValueError(
-                    "When hidden_dim is an int and emb_dim is provided, they must be equal"
-                )
-        else:
+        if emb_dim is None:
             emb_dim = hidden_dim
 
         return [hidden_dim] * n_layers, emb_dim
