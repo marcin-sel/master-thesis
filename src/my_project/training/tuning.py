@@ -11,7 +11,7 @@ import torch
 from lightning.pytorch.callbacks import ModelCheckpoint
 from mlflow.tracking import MlflowClient
 
-from my_project.gnn.training import train_gnn
+from my_project.training.training import train_gnn
 
 
 def _parse_spec(spec):

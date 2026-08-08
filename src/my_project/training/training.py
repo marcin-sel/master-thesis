@@ -16,7 +16,7 @@ from mlflow.tracking import MlflowClient
 from mlflow.utils.mlflow_tags import MLFLOW_PARENT_RUN_ID
 
 from my_project.gnn.trainer import GNNLightningModule
-from my_project.gnn.training_helpers import resolve_artifact_location
+from my_project.training.training_helpers import resolve_artifact_location
 
 
 class EpochMLFlowLogger(MLFlowLogger):

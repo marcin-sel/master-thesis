@@ -12,14 +12,14 @@ from optuna.trial import TrialState
 from sklearn.pipeline import Pipeline
 
 from my_project.gnn.data_module import GNNDataModule
-from my_project.gnn.tuning import (
+from my_project.gnn.utils import feature_indexes, feature_n_classes
+from my_project.training.tuning import (
     grid_values,
     objective,
     param_distribution,
     suggest_from_search_space,
     value_in_spec,
 )
-from my_project.gnn.utils import feature_indexes, feature_n_classes
 
 
 def build_cv_datamodules(
