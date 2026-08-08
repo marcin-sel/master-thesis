@@ -4,6 +4,7 @@ from inspect import signature
 from typing import Optional
 
 import lightning as L
+import optuna
 from lightning.pytorch.callbacks import (
     EarlyStopping,
     LearningRateMonitor,
@@ -13,7 +14,9 @@ from lightning.pytorch.loggers import MLFlowLogger
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
 from mlflow.utils.mlflow_tags import MLFLOW_PARENT_RUN_ID
+
 from my_project.gnn.trainer import GNNLightningModule
+from my_project.gnn.training_helpers import resolve_artifact_location
 
 
 class EpochMLFlowLogger(MLFlowLogger):
@@ -21,6 +24,43 @@ class EpochMLFlowLogger(MLFlowLogger):
         trainer = self._trainer
         epoch = trainer.current_epoch
         super().log_metrics(metrics, step=epoch)
+
+
+class OptunaPruningCallback(L.Callback):
+    """Report the monitored metric to an Optuna trial after every validation
+    epoch and abort (prune) unpromising trials early.
+
+    Kept in-repo instead of ``optuna.integration.PyTorchLightningPruningCallback``
+    because that integration lives in the separate ``optuna-integration`` package
+    (not installed here) and tends to lag behind Lightning releases. The trial's
+    ``step`` is the epoch index, so the pruner's ``n_warmup_steps`` is measured
+    in epochs.
+    """
+
+    def __init__(self, trial: optuna.trial.Trial, monitor: str):
+        super().__init__()
+        self._trial = trial
+        self._monitor = monitor
+
+    def on_validation_end(self, trainer, pl_module):
+        # Skip the pre-training sanity-check pass so it does not report a
+        # meaningless value at epoch 0.
+        if trainer.sanity_checking:
+            return
+        # Only act during fit(): the post-fit best-checkpoint validate() passes
+        # also trigger this hook, and must not report or prune.
+        if trainer.state.fn != "fit":
+            return
+        current = trainer.callback_metrics.get(self._monitor)
+        if current is None:
+            return
+        epoch = trainer.current_epoch
+        self._trial.report(current.item(), step=epoch)
+        if self._trial.should_prune():
+            raise optuna.TrialPruned(
+                f"Trial {self._trial.number} pruned at epoch {epoch} "
+                f"({self._monitor}={current.item():.5f})."
+            )
 
 
 def train_gnn(
@@ -39,6 +79,7 @@ def train_gnn(
     parent_run_id: Optional[str] = None,
     log_params: bool = True,
     run_name: Optional[str] = None,
+    pruning_trial: Optional[optuna.trial.Trial] = None,
 ):
     extra_params = {} if extra_params is None else extra_params.copy()
     tags = {} if tags is None else tags.copy()
@@ -103,7 +144,12 @@ def train_gnn(
 
         if exp is None:
             try:
-                experiment_id = client.create_experiment(experiment_name)
+                experiment_id = client.create_experiment(
+                    experiment_name,
+                    artifact_location=resolve_artifact_location(
+                        logger_kwargs.get("tracking_uri")
+                    ),
+                )
                 exp = client.get_experiment(experiment_id)
             except MlflowException as e:
                 exp = client.get_experiment_by_name(experiment_name)
@@ -198,6 +244,13 @@ def train_gnn(
         lr_monitor_callback,
     ]
 
+    # Optional per-epoch pruning: report the monitored metric to the trial each
+    # validation epoch and let the study's pruner stop hopeless trials early.
+    if pruning_trial is not None:
+        callbacks.append(
+            OptunaPruningCallback(pruning_trial, monitor_kwargs["monitor"])
+        )
+
     trainer = L.Trainer(
         callbacks=callbacks,
         logger=None,
@@ -230,7 +283,22 @@ def train_gnn(
         # them onto a parent run without re-deriving the names here.
         trainer.logged_run_metrics = {k: float(v) for k, v in run_metrics.items()}
 
-    trainer.fit(lightning_module, datamodule=data)
+    try:
+        trainer.fit(lightning_module, datamodule=data)
+    except optuna.TrialPruned:
+        # Lightning finalizes the logger with a FAILED status on ANY exception
+        # raised during fit, including our per-epoch pruning signal. That would
+        # make pruned trials show up as errors in MLflow. Re-mark the run as
+        # KILLED with trial_status=pruned (MLflow has no PRUNED status), matching
+        # how the CV parent run is tagged, then re-raise so Optuna still records
+        # the prune.
+        if logger:
+            try:
+                logger.experiment.set_tag(logger.run_id, "trial_status", "pruned")
+                logger.experiment.set_terminated(logger.run_id, status="KILLED")
+            except MlflowException:
+                pass
+        raise
 
     best_model_path = checkpoint_callback.best_model_path
     if logger and best_model_path:
@@ -239,5 +307,31 @@ def train_gnn(
             local_path=best_model_path,
             artifact_path="checkpoints",
         )
+
+    # Log the estimated feature graph as a JSON edge list so each run carries
+    # the exact structure the GNN was trained on. Skipped for the fully
+    # connected graph (structure is trivial) and for graphless setups whose
+    # datamodule holds an empty graph (e.g. MLP), keyed on the run's
+    # `graph_name` tag.
+    graph = getattr(data, "graph", None)
+    graph_name = tags.get("graph_name")
+    if (
+        logger
+        and graph is not None
+        and graph_name not in (None, "empty", "fully_connected")
+    ):
+        try:
+            graph_payload = {
+                "graph_name": graph_name,
+                "n_nodes": graph.number_of_nodes(),
+                "n_edges": graph.number_of_edges(),
+                "nodes": [str(node) for node in graph.nodes()],
+                "edges": [[str(u), str(v)] for u, v in graph.edges()],
+            }
+            logger.experiment.log_dict(
+                logger.run_id, graph_payload, "graph/estimated_graph.json"
+            )
+        except MlflowException:
+            pass
 
     return trainer
