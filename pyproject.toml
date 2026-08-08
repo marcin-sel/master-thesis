@@ -33,6 +33,8 @@ dependencies = [
     "pyitlib (>=0.3.1,<0.4.0)",
     "lattices @ git+https://github.com/dit/lattices.git",
     "dit @ git+https://github.com/dit/dit.git",
+    "ucimlrepo (>=0.0.7,<0.0.8)",
+    "mifspy (>=0.0.1b3,<0.0.2)",
 ]
 
 
