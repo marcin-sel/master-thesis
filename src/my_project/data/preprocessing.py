@@ -337,3 +337,50 @@ class BooleanMissingEncoder(BaseEstimator, TransformerMixin):
             X[col] = filled.astype(str).astype(self.dtype_)
 
         return X
+
+
+import numpy as np
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.utils.validation import check_array, check_is_fitted
+
+
+class QuantileClipper(BaseEstimator, TransformerMixin):
+    def __init__(self, lower=0.005, upper=0.995):
+        self.lower = lower
+        self.upper = upper
+
+    def fit(self, X, y=None):
+        if not 0 <= self.lower < self.upper <= 1:
+            raise ValueError("Required: 0 <= lower < upper <= 1")
+
+        if hasattr(X, "columns"):
+            self.feature_names_in_ = np.asarray(X.columns, dtype=object)
+
+        X_arr = check_array(X, dtype="numeric", ensure_all_finite="allow-nan")
+
+        self.lower_bounds_ = np.nanquantile(X_arr, self.lower, axis=0)
+        self.upper_bounds_ = np.nanquantile(X_arr, self.upper, axis=0)
+        self.n_features_in_ = X_arr.shape[1]
+
+        return self
+
+    def transform(self, X):
+        check_is_fitted(self, attributes=["lower_bounds_", "upper_bounds_"])
+
+        # Keep the original index/columns so ColumnTransformer with
+        # transform_output="pandas" can align this block with the others.
+        index = X.index if hasattr(X, "index") else None
+        X_arr = check_array(X, dtype="numeric", ensure_all_finite="allow-nan")
+
+        clipped = np.clip(X_arr, self.lower_bounds_, self.upper_bounds_)
+
+        if index is not None:
+            return pd.DataFrame(
+                clipped, index=index, columns=self.get_feature_names_out()
+            )
+        return clipped
+
+    def get_feature_names_out(self, input_features=None):
+        if input_features is not None:
+            return np.asarray(input_features, dtype=object)
+        return np.asarray(getattr(self, "feature_names_in_", []), dtype=object)

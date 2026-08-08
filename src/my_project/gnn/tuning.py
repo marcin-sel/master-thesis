@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import copy
 import json
 import os
@@ -8,58 +10,163 @@ import optuna
 import torch
 from lightning.pytorch.callbacks import ModelCheckpoint
 from mlflow.tracking import MlflowClient
+
 from my_project.gnn.training import train_gnn
 
 
+def _parse_spec(spec):
+    """Normalize one search-space entry to ``(type, config)``."""
+    if isinstance(spec, dict):
+        return spec["type"], spec
+
+    if isinstance(spec, (tuple, list)):
+        if not spec:
+            raise ValueError("Empty search-space spec.")
+
+        ptype = spec[0]
+
+        if ptype == "categorical":
+            return "categorical", {"values": list(spec[1:])}
+
+        if len(spec) < 2:
+            raise ValueError(f"Malformed spec: {spec!r}")
+
+        if ptype in {"int", "float"}:
+            low = spec[1]
+            high = spec[2] if len(spec) >= 3 else spec[1]
+            return ptype, {"values": [low, high]}
+
+        return "categorical", {"values": list(spec)}
+
+    raise TypeError(f"Unsupported search-space spec: {spec!r}")
+
+
+def _suggest_one(trial, name, spec):
+    """Suggest a single hyperparameter from its spec."""
+    ptype, cfg = _parse_spec(spec)
+
+    if ptype == "categorical":
+        return trial.suggest_categorical(name, cfg["values"])
+
+    low, high = cfg["values"]
+
+    if ptype == "int":
+        return trial.suggest_int(
+            name,
+            int(low),
+            int(high),
+            step=int(cfg.get("step", 1)),
+            log=cfg.get("log", False),
+        )
+
+    if ptype == "float":
+        return trial.suggest_float(
+            name,
+            float(low),
+            float(high),
+            step=cfg.get("step"),
+            log=cfg.get("log", False),
+        )
+
+    raise ValueError(f"Unknown param type {ptype!r} for {name!r}")
+
+
 def _suggest_from_grid(trial, search_space):
-    """Pull every grid dimension through the trial.
-
-    The values come straight from ``search_space`` so it stays the single
-    source of truth: a ``GridSampler`` walks the combinations exhaustively,
-    while a sampler like TPE samples within the same categorical choices.
-    """
+    """Suggest all parameters from a search-space mapping."""
     return {
-        key: trial.suggest_categorical(key, values)
-        for key, values in search_space.items()
+        name: _suggest_one(trial, name, spec) for name, spec in search_space.items()
     }
 
 
-def suggest_mlp_params(trial, search_space, base_params=None):
+def grid_values(spec):
+    """Return the discrete values represented by one search-space spec."""
+    ptype, cfg = _parse_spec(spec)
+    values = list(cfg["values"])
+
+    if ptype == "categorical":
+        return values
+
+    low, high = values
+    if ptype == "int":
+        step = int(cfg.get("step", 1))
+        return list(range(int(low), int(high) + 1, step))
+
+    step = cfg.get("step")
+    if step is not None:
+        n_steps = int(round((float(high) - float(low)) / float(step)))
+        return [float(low) + index * float(step) for index in range(n_steps + 1)]
+
+    return [float(low), float(high)]
+
+
+def param_distribution(spec):
+    """Return the Optuna distribution corresponding to one search-space spec."""
+    ptype, cfg = _parse_spec(spec)
+
+    if ptype == "categorical":
+        return optuna.distributions.CategoricalDistribution(cfg["values"])
+
+    low, high = cfg["values"]
+    if ptype == "int":
+        return optuna.distributions.IntDistribution(
+            low=int(low),
+            high=int(high),
+            step=int(cfg.get("step", 1)),
+            log=bool(cfg.get("log", False)),
+        )
+
+    return optuna.distributions.FloatDistribution(
+        low=float(low),
+        high=float(high),
+        step=cfg.get("step"),
+        log=bool(cfg.get("log", False)),
+    )
+
+
+def value_in_spec(value, spec):
+    """Return whether a concrete parameter value fits the given spec."""
+    ptype, cfg = _parse_spec(spec)
+
+    if ptype == "categorical":
+        return value in cfg["values"]
+
+    low, high = cfg["values"]
+    if value < low or value > high:
+        return False
+
+    step = cfg.get("step")
+    if step is None:
+        return True
+
+    if ptype == "int":
+        return (int(value) - int(low)) % int(step) == 0
+
+    ratio = (float(value) - float(low)) / float(step)
+    return np.isclose(ratio, round(ratio))
+
+
+def suggest_from_search_space(
+    trial,
+    search_space,
+    base_params=None,
+    derived_params=None,
+):
+    """Suggest params from a search-space spec and merge base/derived values."""
     if base_params is None:
         base_params = {}
     else:
         base_params = base_params.copy()
 
-    sampled = _suggest_from_grid(trial, search_space)
-
-    # `hidden_dim` (int) + `n_layers` is expanded by the model into a per-layer
-    # list, so reuse the sampled embedding width here.
-    derived = {
-        # "hidden_dim": sampled["hidden_dim"],
-    }
-
-    suggested_params = base_params.copy()
-    suggested_params.update(sampled)
-    suggested_params.update(derived)
-    return suggested_params
-
-
-def suggest_gnn_params(trial, search_space, base_params=None):
-    if base_params is None:
-        base_params = {}
+    if derived_params is None:
+        derived_params = {}
     else:
-        base_params = base_params.copy()
+        derived_params = derived_params.copy()
 
     sampled = _suggest_from_grid(trial, search_space)
 
-    derived = {
-        # "emb_dim": sampled["hidden_dim"],
-        # "add_skip": base_params.get("add_skip", False),
-    }
-
     suggested_params = base_params.copy()
     suggested_params.update(sampled)
-    suggested_params.update(derived)
+    suggested_params.update(derived_params)
     return suggested_params
 
 
@@ -70,8 +177,9 @@ def objective(
     search_space,
     technical_settings=None,
     base_params=None,
-    suggest_params_func=suggest_gnn_params,
+    suggest_params_func=suggest_from_search_space,
     run_test=True,
+    pruning_mode="epoch",
 ):
     if technical_settings is None:
         technical_settings = {}
@@ -87,9 +195,6 @@ def objective(
 
     params = suggest_params_func(trial, search_space, base_params=base_params)
 
-    # Where to drop a failure traceback that does not depend on MLflow being
-    # writable. We reuse the trial checkpoint dir's parent so errors land next
-    # to the study results.
     checkpoint_dir = technical_settings.get("trainer_kwargs", {}).get("checkpoint_dir")
     error_log_dir = (
         os.path.join(os.path.dirname(checkpoint_dir), "errors")
@@ -108,14 +213,29 @@ def objective(
 
     fold_seeds = technical_settings.pop("fold_seeds", None)
 
-    # Create one MLflow parent run per trial so that folds become nested children.
+    n_folds = len(cv_folds)
     logger_kwargs = technical_settings.get("logger_kwargs", {})
     experiment_name = logger_kwargs.get("experiment_name")
     tracking_uri = logger_kwargs.get("tracking_uri")
 
+    settings_tags = technical_settings.get("tags", {})
+    run_name_parts = [
+        str(settings_tags.get("model_cls") or model_cls.__name__),
+        settings_tags.get("conv_layer"),
+        settings_tags.get("graph_name"),
+    ]
+    run_name_base = "__".join(str(part) for part in run_name_parts if part)
+    trial_run_name = f"{run_name_base}__trial_{trial.number}"
+    # Group all trials of one model/graph combo (mirrors XGBoost's run_group).
+    run_group = run_name_base
+    # Put them in settings_tags so they land on fold runs as both tags and
+    # params (via extra_params), not only on the parent run.
+    settings_tags["run_group"] = run_group
+    settings_tags["parent_run_name"] = trial_run_name
+
     mlflow_client = None
     parent_run_id = None
-    if experiment_name is not None:
+    if experiment_name is not None and n_folds > 1:
         mlflow_client = MlflowClient(tracking_uri=tracking_uri)
         exp = mlflow_client.get_experiment_by_name(experiment_name)
         if exp is None:
@@ -125,38 +245,35 @@ def objective(
 
         parent_run = mlflow_client.create_run(
             experiment_id=experiment_id,
-            run_name=f"{experiment_name}_trial_{trial.number}",
+            run_name=trial_run_name,
             tags={
                 "trial_id": str(trial.number),
                 "run_type": "parent",
                 "experiment_name": experiment_name,
+                "run_group": run_group,
+                "parent_run_name": trial_run_name,
             },
         )
         parent_run_id = parent_run.info.run_id
 
-        # Log shared hyperparameters and labels on the parent run. They are also
-        # repeated on each fold (child) run so individual folds are inspectable.
-        # model_cls is logged as a param (its name) on the fold runs by
-        # train_gnn, so mirror it here too for a chartable axis on the parent.
         mlflow_client.log_param(parent_run_id, "model_cls", model_cls.__name__)
+        mlflow_client.log_param(parent_run_id, "parent_run_name", trial_run_name)
+        mlflow_client.log_param(parent_run_id, "run_group", run_group)
         for key, value in params.items():
             mlflow_client.log_param(
                 parent_run_id,
                 key,
                 json.dumps(value) if isinstance(value, dict) else value,
             )
-        for key, value in technical_settings.get("tags", {}).items():
+        for key, value in settings_tags.items():
             if value is not None:
                 mlflow_client.set_tag(parent_run_id, key, str(value))
-                # Labels are also logged as params so MLflow charts (e.g. box
-                # plots) can use them on the X axis, which tags cannot do.
                 mlflow_client.log_param(parent_run_id, key, value)
 
     try:
         for fold_idx, fold_results in enumerate(cv_folds):
             fold_base_params = fold_results.get("params").copy()
-            data_fold = fold_results.get("data")
-            data_fold = copy.deepcopy(data_fold)
+            data_fold = copy.deepcopy(fold_results.get("data"))
             data_fold.keep_on_gpu = technical_settings.get("keep_on_gpu", False)
             data_fold.setup()
 
@@ -167,8 +284,7 @@ def objective(
             if fold_seeds is not None and fold_idx < len(fold_seeds):
                 fold_seed = fold_seeds[fold_idx]
 
-            tags = technical_settings.get("tags", {}).copy()
-            # Backward-compat: older callers passed labels via `to_log`.
+            tags = settings_tags.copy()
             tags.update(technical_settings.get("to_log", {}))
             tags["run_type"] = "fold"
             if experiment_name is not None:
@@ -183,25 +299,39 @@ def objective(
                 trial_id=trial.number,
                 fold_id=fold_idx,
                 tags=tags,
-                # `graph_name` is not visible inside train_gnn, so pass it as a
-                # param to make it usable as a chart axis on the fold runs.
+                run_name=(
+                    trial_run_name
+                    if n_folds == 1
+                    else f"{trial_run_name}__fold_{fold_idx}"
+                ),
                 extra_params={
                     key: value
-                    for key, value in technical_settings.get("tags", {}).items()
-                    if value is not None
+                    for key, value in settings_tags.items()
+                    if value is not None and key not in params_fold
                 },
                 parent_run_id=parent_run_id,
                 log_params=True,
+                pruning_trial=trial if pruning_mode == "epoch" else None,
                 **{
-                    k: v
-                    for k, v in technical_settings.items()
-                    if k not in ("tags", "to_log", "keep_on_gpu")
+                    key: value
+                    for key, value in technical_settings.items()
+                    if key not in ("tags", "to_log", "keep_on_gpu")
                 },
             )
             best_score = trainer.callback_metrics[
                 technical_settings["monitor_kwargs"]["monitor"]
             ].item()
             fold_scores.append(best_score)
+
+            # Snapshot val metrics before test(); Lightning drops them from
+            # callback_metrics after a separate test loop, so mean_val/* would
+            # otherwise never be aggregated onto the parent run.
+            fold_metric_values = {}
+            for metric_name, metric_value in trainer.callback_metrics.items():
+                try:
+                    fold_metric_values[metric_name] = float(metric_value.item())
+                except (AttributeError, ValueError, TypeError):
+                    continue
 
             test_dataloader = data_fold.test_dataloader()
             if run_test and test_dataloader is not None:
@@ -211,8 +341,6 @@ def objective(
                     verbose=False,
                 )
 
-            # Collect every numeric callback metric so the parent can hold means.
-            fold_metric_values = {}
             for metric_name, metric_value in trainer.callback_metrics.items():
                 try:
                     fold_metric_values[metric_name] = float(metric_value.item())
@@ -220,11 +348,7 @@ def objective(
                     continue
             fold_metrics.append(fold_metric_values)
 
-            # Track the child run so trial-level means can be mirrored onto it.
             fold_run_ids.append(getattr(trainer.logger, "run_id", None))
-
-            # Run-level metrics (e.g. model size) are logged by train_gnn; pick
-            # them up generically so the parent does not hardcode their names.
             fold_run_metrics.append(dict(getattr(trainer, "logged_run_metrics", {})))
 
             best_epoch = _extract_best_epoch(trainer)
@@ -240,25 +364,23 @@ def objective(
 
             fold_best_checkpoints.append(best_path)
 
-            intermediate_value = float(np.mean(fold_scores))
-            trial.report(intermediate_value, step=fold_idx)
+            if pruning_mode == "fold":
+                intermediate_value = float(np.mean(fold_scores))
+                trial.report(intermediate_value, step=fold_idx)
+                if trial.should_prune():
+                    raise optuna.TrialPruned()
 
-            mean_score = np.mean(fold_scores)
+            mean_score = float(np.mean(fold_scores))
 
             trial.set_user_attr("best_epochs", fold_best_epochs)
             trial.set_user_attr("best_checkpoints", fold_best_checkpoints)
-
             trial.set_user_attr("fold_scores", fold_scores)
             trial.set_user_attr("fold_valid_epochs", fold_best_epochs)
-            trial.set_user_attr("fold_score", np.mean(fold_scores))
-            trial.set_user_attr("valid_epoch", np.mean(fold_best_epochs))
+            trial.set_user_attr("fold_score", mean_score)
+            valid_epochs = [epoch for epoch in fold_best_epochs if epoch is not None]
+            if valid_epochs:
+                trial.set_user_attr("valid_epoch", float(np.mean(valid_epochs)))
 
-            if trial.should_prune():
-                raise optuna.TrialPruned()
-
-        # Aggregate per-fold metrics into trial-level means so callbacks (e.g. a
-        # progress bar) and other consumers can read them straight from the
-        # trial, independent of whether MLflow logging is enabled.
         if fold_metrics:
             metric_names = {name for fold in fold_metrics for name in fold}
             mean_metrics = {}
@@ -270,20 +392,16 @@ def objective(
                     mean_metrics[metric_name] = float(np.mean(values))
             trial.set_user_attr("mean_metrics", mean_metrics)
 
-        # Log aggregated metrics on the parent run.
         if mlflow_client is not None and parent_run_id is not None and fold_scores:
-            valid_epochs = [e for e in fold_best_epochs if e is not None]
+            valid_epochs = [epoch for epoch in fold_best_epochs if epoch is not None]
             if valid_epochs:
                 mlflow_client.log_metric(
                     parent_run_id, "mean_best_epoch", float(np.mean(valid_epochs))
                 )
-                # Mirror the best epoch under the child-facing "epoch" name too.
                 mlflow_client.log_metric(
                     parent_run_id, "epoch", float(np.mean(valid_epochs))
                 )
 
-            # Run-level metrics logged per child by train_gnn (e.g. model size)
-            # are not part of callback_metrics; mirror their mean onto the parent.
             if fold_run_metrics:
                 run_metric_names = {name for fold in fold_run_metrics for name in fold}
                 for metric_name in sorted(run_metric_names):
@@ -297,10 +415,7 @@ def objective(
                             parent_run_id, metric_name, float(np.mean(values))
                         )
 
-            # Trial-level mean/std for every metric. The suffixed values are
-            # mirrored onto each child so that sorting by `<metric>_mean` keeps
-            # the whole family (parent + folds) grouped in MLflow's flat view.
-            child_run_ids = [rid for rid in fold_run_ids if rid is not None]
+            child_run_ids = [run_id for run_id in fold_run_ids if run_id is not None]
             metric_names = {name for fold in fold_metrics for name in fold}
             for metric_name in sorted(metric_names):
                 values = [
@@ -309,9 +424,8 @@ def objective(
                 if not values:
                     continue
                 metric_mean = float(np.mean(values))
-                metric_std = float(np.std(values))
-                # Mean under the original name (kept for backward-compat).
                 mlflow_client.log_metric(parent_run_id, metric_name, metric_mean)
+                metric_std = float(np.std(values))
                 for run_id in [parent_run_id, *child_run_ids]:
                     mlflow_client.log_metric(run_id, f"mean_{metric_name}", metric_mean)
                     mlflow_client.log_metric(run_id, f"std_{metric_name}", metric_std)
@@ -322,7 +436,6 @@ def objective(
         return mean_score
 
     except optuna.TrialPruned:
-        # MLflow has no PRUNED status; use KILLED + a tag to stay filterable.
         parent_status = "KILLED"
         parent_trial_status = "pruned"
         parent_error = None
@@ -330,15 +443,9 @@ def objective(
     except Exception as exc:
         parent_status = "FAILED"
         parent_trial_status = "failed"
-        # Keep the failure reason so it is inspectable in the MLflow UI instead
-        # of just a bare "failed" status.
         error_tb = traceback.format_exc()
         parent_error = (exc, error_tb)
 
-        # Persist the traceback independently of MLflow: a failure is often
-        # caused by MLflow itself being unwritable (e.g. "readonly database"),
-        # in which case logging the error *to* MLflow would silently fail too.
-        # The Optuna storage and the local filesystem are separate sinks.
         try:
             trial.set_user_attr("error", f"{type(exc).__name__}: {exc}"[:5000])
             trial.set_user_attr("error_traceback", error_tb)
@@ -355,16 +462,12 @@ def objective(
         raise
     finally:
         if mlflow_client is not None and parent_run_id is not None:
-            # Guard every MLflow write: if the backend is down we still want the
-            # parent run terminated rather than left hanging in RUNNING.
             try:
                 mlflow_client.set_tag(
                     parent_run_id, "trial_status", parent_trial_status
                 )
                 if parent_error is not None:
                     exc, error_tb = parent_error
-                    # Short, searchable message in the runs table; full traceback
-                    # as an artifact for the details view.
                     error_message = f"{type(exc).__name__}: {exc}"
                     mlflow_client.set_tag(parent_run_id, "error", error_message[:5000])
                     mlflow_client.log_text(

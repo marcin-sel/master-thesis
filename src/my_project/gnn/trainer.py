@@ -4,7 +4,6 @@ from typing import Optional
 import lightning as L
 import torch
 import torch.nn as nn
-from my_project.gnn import models as _models
 from torchmetrics import MetricCollection
 from torchmetrics.classification import (
     BinaryAccuracy,
@@ -16,11 +15,8 @@ from torchmetrics.classification import (
     BinarySpecificity,
 )
 
-# PyTorch >= 2.6 domyślnie ładuje checkpointy z ``weights_only=True``, co blokuje
-# odpicklowanie referencji do klas modeli zapisanych w hiperparametrach
-# (``save_hyperparameters`` zapisuje m.in. ``model_cls``). Rejestrujemy wszystkie
-# klasy modeli jako bezpieczne globale raz, przy imporcie modułu, dzięki czemu
-# ``trainer.test(ckpt_path=...)`` i ``load_from_checkpoint`` działają globalnie.
+from my_project.gnn import models as _models
+
 _model_classes = [
     obj
     for obj in vars(_models).values()
@@ -221,5 +217,13 @@ class GNNLightningModule(L.LightningModule):
         )
         return {
             "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "monitor": self.scheduler_monitor},
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "monitor": self.scheduler_monitor,
+                "interval": "epoch",
+                # Step only on epochs where validation actually ran, so the
+                # monitored val metric (e.g. val/loss) exists. Aligns with
+                # Trainer.check_val_every_n_epoch, which may be > 1.
+                "frequency": getattr(self.trainer, "check_val_every_n_epoch", 1) or 1,
+            },
         }
