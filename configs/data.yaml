@@ -11,6 +11,6 @@ preprocessing:
     valid: 0.15
     test: 0.15
   cv:
-    n_splits: 3
+    n_splits: 5
     shuffle: True
     random_state: 42
