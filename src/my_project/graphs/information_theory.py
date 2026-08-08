@@ -14,7 +14,11 @@ from pyitlib import discrete_random_variable as drv
 from sklearn.preprocessing import OrdinalEncoder
 
 from my_project.graphs.base import GraphBuilder
-from my_project.graphs.utils import graph_from_matrix
+from my_project.graphs.utils import (
+    graph_from_matrix,
+    graph_from_matrix_top_n,
+    permute_nodes,
+)
 
 MEASURES = (
     "feature_mi",
@@ -244,6 +248,12 @@ def compute_information_matrices(
     return results
 
 
+def compute_info(X_train, y_train, n_bins=None):
+    """Interaction-information matrix over the train split."""
+    matrices = compute_information_matrices(X_train, y_train, n_bins=n_bins)
+    return matrices["interaction_information"]
+
+
 def to_probability(matrix: pd.DataFrame) -> pd.DataFrame:
     """Map each entry to its empirical CDF rank (quantile) in ``[0, 1]``.
 
@@ -389,3 +399,29 @@ class InformationGraphBuilder(GraphBuilder):
 
         self.fit(X, y)
         return self.graph_at(self.threshold)
+
+
+def build_ii_graphs(
+    ii,
+    permute_seeds: Sequence[int],
+    threshold=None,
+    n_bins=None,
+    n_edges=None,
+):
+    """Graphs built from the interaction-information matrix.
+
+    Provide either ``threshold`` (a quantile in [0, 1] applied to the
+    CDF-processed matrix, i.e. the fraction of edges to drop) or ``n_edges``
+    (keep exactly the top-N pairs). ``n_edges`` takes precedence when both are
+    given. Also returns one permuted copy per seed in ``permute_seeds``.
+    """
+    if n_edges is not None:
+        graph_ii = graph_from_matrix_top_n(ii, n_edges)
+    else:
+        graph_ii = InformationGraphBuilder(n_bins=n_bins).build(
+            matrix=ii, threshold=threshold
+        )
+    graphs = {"ii": graph_ii}
+    for s in permute_seeds:
+        graphs[f"ii_permuted_{s}"] = permute_nodes(graph_ii, seed=s)
+    return graphs
