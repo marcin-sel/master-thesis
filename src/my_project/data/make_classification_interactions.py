@@ -6,7 +6,7 @@ from sklearn.utils import Bunch, check_random_state
 from sklearn.utils import shuffle as util_shuffle
 
 
-def make_classification(
+def make_classification_interactions(
     n_samples=100,
     n_features=20,
     *,
@@ -15,6 +15,7 @@ def make_classification(
     n_repeated=0,
     n_classes=2,
     n_clusters_per_class=2,
+    n_interactions=0,
     weights=None,
     flip_y=0.01,
     class_sep=1.0,
@@ -24,6 +25,7 @@ def make_classification(
     shuffle=True,
     random_state=None,
     return_X_y=True,
+    return_interactions=False,
 ):
     """Generate a random n-class classification problem.
 
@@ -36,10 +38,10 @@ def make_classification(
     Without shuffling, ``X`` horizontally stacks features in the following
     order: the primary ``n_informative`` features, followed by ``n_redundant``
     linear combinations of the informative features, followed by ``n_repeated``
-    duplicates, drawn randomly with replacement from the informative and
-    redundant features. The remaining features are filled with random noise.
-    Thus, without shuffling, all useful features are contained in the columns
-    ``X[:, :n_informative + n_redundant + n_repeated]``.
+    duplicates drawn randomly with replacement from the informative and
+    redundant features, followed by ``2 * n_interactions`` interaction-pair
+    features (two columns per interaction). The remaining features are filled
+    with random noise.
 
     Read more in the :ref:`User Guide <sample_generators>`.
 
@@ -77,6 +79,21 @@ def make_classification(
 
     n_clusters_per_class : int, default=2
         The number of clusters per class.
+
+    n_interactions : int, default=0
+        The number of pairwise interactions to embed. Each interaction adds a
+        *hidden* discriminative dimension to the hypercube (so it helps create
+        ``y`` exactly like an ordinary informative feature) and exposes it as a
+        **pair** of returned features ``(u, v)`` whose product ``u * v`` equals
+        that hidden coordinate. The sign that carries the class is XOR-split
+        across the pair and the magnitude is split log-normally, so ``u`` and
+        ``v`` are each individually almost uninformative while their product is
+        fully discriminative -- a genuine interaction with positive interaction
+        information ``II(u; v; y)``. Each interaction therefore consumes two
+        feature columns. The hidden products themselves are not part of ``X``
+        unless ``return_interactions=True``. The column indices of each returned
+        pair are stored in ``interaction_pairs`` (available on the ``Bunch``
+        when ``return_X_y=False``).
 
     weights : array-like of shape (n_classes,) or (n_classes - 1,),\
               default=None
@@ -122,6 +139,12 @@ def make_classification(
         If True, a tuple ``(X, y)`` instead of a Bunch object is returned.
 
         .. versionadded:: 1.7
+
+    return_interactions : bool, default=False
+        If True, also return the hidden interaction coordinates (one column per
+        interaction) that were used to create ``y``. When ``return_X_y=True``
+        the result becomes the tuple ``(X, y, interactions)``; otherwise the
+        array is available as the ``interactions`` attribute of the ``Bunch``.
 
     Returns
     -------
@@ -173,19 +196,34 @@ def make_classification(
     """
     generator = check_random_state(random_state)
 
+    n_inter_feat = 2 * n_interactions
+
     # Count features, clusters and samples
-    if n_informative + n_redundant + n_repeated > n_features:
+    if n_informative + n_redundant + n_repeated + n_inter_feat > n_features:
         raise ValueError(
-            "Number of informative, redundant and repeated "
-            "features must sum to less than the number of total"
-            " features"
+            "Number of informative, redundant, repeated features plus twice the "
+            "number of interactions must sum to less than the total number of "
+            "features"
         )
-    # Use log2 to avoid overflow errors
-    if n_informative < np.log2(n_classes * n_clusters_per_class):
-        msg = "n_classes({}) * n_clusters_per_class({}) must be"
-        msg += " smaller or equal 2**n_informative({})={}"
+    if n_redundant > 0 and n_informative < 1:
         raise ValueError(
-            msg.format(n_classes, n_clusters_per_class, n_informative, 2**n_informative)
+            "At least one informative feature is required to build redundant "
+            "features."
+        )
+    # Use log2 to avoid overflow errors. Interactions add hidden discriminative
+    # dimensions, so the hypercube spans ``n_informative + n_interactions`` of
+    # them.
+    n_discriminative = n_informative + n_interactions
+    if n_discriminative < np.log2(n_classes * n_clusters_per_class):
+        msg = "n_classes({}) * n_clusters_per_class({}) must be"
+        msg += " smaller or equal 2**(n_informative + n_interactions)({})={}"
+        raise ValueError(
+            msg.format(
+                n_classes,
+                n_clusters_per_class,
+                n_discriminative,
+                2**n_discriminative,
+            )
         )
 
     if weights is not None:
@@ -205,7 +243,7 @@ def make_classification(
     else:
         weights_ = [1.0 / n_classes] * n_classes
 
-    n_random = n_features - n_informative - n_redundant - n_repeated
+    n_random = n_features - n_informative - n_redundant - n_repeated - n_inter_feat
     n_clusters = n_classes * n_clusters_per_class
 
     # Distribute samples among clusters by weight
@@ -221,15 +259,30 @@ def make_classification(
     X = np.zeros((n_samples, n_features))
     y = np.zeros(n_samples, dtype=int)
 
-    # Build the polytope whose vertices become cluster centroids
-    centroids = _generate_hypercube(n_clusters, n_informative, generator).astype(
+    # Build the polytope whose vertices become the cluster centroids. The
+    # discriminative subspace spans the ``n_informative`` ordinary informative
+    # dimensions *plus* one hidden dimension per interaction, so the hidden
+    # interaction coordinates distinguish the clusters exactly like ordinary
+    # informative features and therefore genuinely co-create ``y``.
+    n = n_informative + n_redundant
+    n_inter_start = n + n_repeated
+
+    all_centroids = _generate_hypercube(n_clusters, n_discriminative, generator).astype(
         float, copy=False
     )
-    centroids *= 2 * class_sep
-    centroids -= class_sep
+    all_centroids *= 2 * class_sep
+    all_centroids -= class_sep
     if not hypercube:
-        centroids *= generator.uniform(size=(n_clusters, 1))
-        centroids *= generator.uniform(size=(1, n_informative))
+        all_centroids *= generator.uniform(size=(n_clusters, 1))
+        all_centroids *= generator.uniform(size=(1, n_discriminative))
+    centroids = all_centroids[:, :n_informative]
+    interaction_centroids = all_centroids[:, n_informative:]
+
+    # Hidden interaction coordinates: the "interaction" dimensions of the
+    # hypercube that drive ``y`` but are not returned in ``X`` (unless
+    # ``return_interactions=True``). Each one is later split into a returned
+    # pair of features whose *product* recovers it.
+    interactions = generator.standard_normal(size=(n_samples, n_interactions))
 
     # Initially draw informative features from the standard normal
     X[:, :n_informative] = generator.standard_normal(size=(n_samples, n_informative))
@@ -246,6 +299,26 @@ def make_classification(
 
         X_k += centroid  # shift the cluster to a vertex
 
+        if n_interactions > 0:
+            # Shift this cluster's hidden interaction coordinates to their
+            # vertex, then split each coordinate ``c`` into a returned pair
+            # ``(u, v)`` with ``u * v == c``. The sign that encodes the class is
+            # XOR-split across the pair (a random sign on ``u`` and its mirror
+            # on ``v``) and the magnitude is split log-normally, so each feature
+            # is individually ~uninformative while their product fully
+            # determines the class -- a genuine pairwise interaction with
+            # II(u; v; y) > 0.
+            m = stop - start
+            c = interactions[start:stop] + interaction_centroids[k]
+            interactions[start:stop] = c
+            sign_u = generator.choice([-1.0, 1.0], size=(m, n_interactions))
+            split = generator.standard_normal(size=(m, n_interactions))
+            mag = np.sqrt(np.abs(c))
+            u = sign_u * mag * np.exp(split)
+            v = sign_u * np.sign(c) * mag * np.exp(-split)
+            X[start:stop, n_inter_start : n_inter_start + n_inter_feat : 2] = u
+            X[start:stop, n_inter_start + 1 : n_inter_start + n_inter_feat : 2] = v
+
     # Create redundant features
     if n_redundant > 0:
         B = 2 * generator.uniform(size=(n_informative, n_redundant)) - 1
@@ -254,10 +327,11 @@ def make_classification(
         )
 
     # Repeat some features
-    n = n_informative + n_redundant
     if n_repeated > 0:
-        indices = ((n - 1) * generator.uniform(size=n_repeated) + 0.5).astype(np.intp)
-        X[:, n : n + n_repeated] = X[:, indices]
+        rep_indices = ((n - 1) * generator.uniform(size=n_repeated) + 0.5).astype(
+            np.intp
+        )
+        X[:, n : n + n_repeated] = X[:, rep_indices]
 
     # Fill useless features
     if n_random > 0:
@@ -279,15 +353,27 @@ def make_classification(
 
     indices = np.arange(n_features)
     if shuffle:
-        # Randomly permute samples
-        X, y = util_shuffle(X, y, random_state=generator)
+        # Randomly permute samples (keep the hidden interaction values aligned)
+        if n_interactions > 0:
+            X, y, interactions = util_shuffle(
+                X, y, interactions, random_state=generator
+            )
+        else:
+            X, y = util_shuffle(X, y, random_state=generator)
 
         # Randomly permute features
         generator.shuffle(indices)
         X[:, :] = X[:, indices]
 
     if return_X_y:
+        if return_interactions:
+            return X, y, interactions
         return X, y
+
+    # Map original column positions to their post-shuffle positions so the
+    # reported interaction pairs point at the right columns of the returned X.
+    inverse = np.empty(n_features, dtype=int)
+    inverse[indices] = np.arange(n_features)
 
     # feat_desc describes features in X
     feat_desc = ["random"] * n_features
@@ -298,6 +384,17 @@ def make_classification(
             feat_desc[i] = "redundant"
         elif n <= index < n + n_repeated:
             feat_desc[i] = "repeated"
+        elif n_inter_start <= index < n_inter_start + n_inter_feat:
+            feat_desc[i] = "interaction"
+
+    # Column indices of each returned (u, v) interaction pair in the final X.
+    interaction_pairs = [
+        (
+            int(inverse[n_inter_start + 2 * j]),
+            int(inverse[n_inter_start + 2 * j + 1]),
+        )
+        for j in range(n_interactions)
+    ]
 
     parameters = {
         "n_samples": n_samples,
@@ -307,6 +404,8 @@ def make_classification(
         "n_repeated": n_repeated,
         "n_classes": n_classes,
         "n_clusters_per_class": n_clusters_per_class,
+        "n_interactions": n_interactions,
+        "interaction_pairs": interaction_pairs,
         "weights": weights,
         "flip_y": flip_y,
         "class_sep": class_sep,
@@ -316,14 +415,16 @@ def make_classification(
         "shuffle": shuffle,
         "random_state": random_state,
         "return_X_y": return_X_y,
+        "return_interactions": return_interactions,
     }
 
     bunch = Bunch(
-        DESCR=make_classification.__doc__,
+        DESCR=make_classification_interactions.__doc__,
         parameters=parameters,
         feature_info=feat_desc,
         X=X,
         y=y,
+        interactions=interactions if return_interactions else None,
     )
 
     return bunch
