@@ -6,24 +6,46 @@ authors = [
     {name = "Marcin Seliga",email = "marcin-sel@wp.pl"}
 ]
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "ipykernel (>=7.2.0,<8.0.0)",
     "pre-commit (>=4.5.1,<5.0.0)",
     "numpy (>=2.4.4,<3.0.0)",
-    "pandas (>=3.0.2,<4.0.0)",
+    "pandas (>=2.2.3,<3.0.0)",
     "matplotlib (>=3.10.8,<4.0.0)",
     "seaborn (>=0.13.2,<0.14.0)",
     "tqdm (>=4.67.3,<5.0.0)",
     "scikit-learn (>=1.8.0,<2.0.0)",
     "dotenv (>=0.9.9,<0.10.0)",
     "plotly (>=6.7.0,<7.0.0)",
-    "nbformat (>=5.10.4,<6.0.0)"
+    "nbformat (>=5.10.4,<6.0.0)",
+    "torch (>=2.11.0,<3.0.0)",
+    "torch-geometric (>=2.7.0,<3.0.0)",
+    "pgmpy (>=1.1.2,<2.0.0)",
+    "networkx (>=3.6.1,<4.0.0)",
+    "lightning (>=2.6.1,<3.0.0)",
+    "optuna (>=4.8.0,<5.0.0)",
+    "mlflow (>=3.12.0,<4.0.0)",
+    "graphviz (>=0.21,<0.22)",
+    "torchview (>=0.2.7,<0.3.0)",
+    "torchinfo (>=1.8.0,<2.0.0)",
+    "transformers (>=5.10.2,<6.0.0)",
+    "pyitlib (>=0.3.1,<0.4.0)",
+    "lattices @ git+https://github.com/dit/lattices.git",
+    "dit @ git+https://github.com/dit/dit.git",
 ]
 
 
 [tool.poetry]
 packages = [{include = "my_project", from = "src"}]
+
+[tool.poetry.dependencies]
+torch = { version = ">=2.11.0,<3.0.0", source = "pytorch-cu130" }
+
+[[tool.poetry.source]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+priority = "explicit"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
