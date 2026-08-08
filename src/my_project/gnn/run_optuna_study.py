@@ -8,11 +8,18 @@ from typing import Any
 import numpy as np
 import optuna
 import pandas as pd
-from my_project.gnn.data_module import GNNDataModule
-from my_project.gnn.tuning import objective, suggest_gnn_params
-from my_project.gnn.utils import feature_indexes, feature_n_classes
 from optuna.trial import TrialState
 from sklearn.pipeline import Pipeline
+
+from my_project.gnn.data_module import GNNDataModule
+from my_project.gnn.tuning import (
+    grid_values,
+    objective,
+    param_distribution,
+    suggest_from_search_space,
+    value_in_spec,
+)
+from my_project.gnn.utils import feature_indexes, feature_n_classes
 
 
 def build_cv_datamodules(
@@ -102,16 +109,19 @@ def build_cv_datamodules(
         categorical_dtypes = ["category", "object", "bool", "boolean"]
 
         if preprocessing_pipeline is not None:
-            # preprocessing_pipeline = copy.deepcopy(preprocessing_pipeline)
-            preprocessing_pipeline.fit(X_train)
+            # Deep-copy per fold so each fold gets its own train-fitted pipeline
+            # (avoids leaking one fold's statistics into another via a shared,
+            # re-fitted object). Copy from the original argument every time.
+            fold_pipeline = copy.deepcopy(preprocessing_pipeline)
+            fold_pipeline.fit(X_train)
 
             # Detect categorical features from the preprocessed-but-not-encoded
             # view, so quantile-binned high-missing columns (now categorical
             # with a "Missing" level) are recognized alongside the original
             # categoricals before the encoder turns everything into integers.
-            if "encoder" in preprocessing_pipeline.named_steps:
-                pre_encoder = Pipeline(preprocessing_pipeline.steps[:-1])
-                encoder = preprocessing_pipeline.named_steps["encoder"]
+            if "encoder" in fold_pipeline.named_steps:
+                pre_encoder = Pipeline(fold_pipeline.steps[:-1])
+                encoder = fold_pipeline.named_steps["encoder"]
                 X_train_pre = pre_encoder.transform(X_train)
                 X_valid_pre = pre_encoder.transform(X_valid)
                 categorical_features = X_train_pre.select_dtypes(
@@ -122,10 +132,10 @@ def build_cv_datamodules(
                 if X_test is not None:
                     X_test = encoder.transform(pre_encoder.transform(X_test))
             else:
-                X_train = preprocessing_pipeline.transform(X_train)
-                X_valid = preprocessing_pipeline.transform(X_valid)
+                X_train = fold_pipeline.transform(X_train)
+                X_valid = fold_pipeline.transform(X_valid)
                 if X_test is not None:
-                    X_test = preprocessing_pipeline.transform(X_test)
+                    X_test = fold_pipeline.transform(X_test)
                 categorical_features = X_train.select_dtypes(
                     include=categorical_dtypes
                 ).columns.to_list()
@@ -205,10 +215,12 @@ def run_optuna_study_for_gnn(
     optuna_n_jobs: int = 1,
     direction: str = "minimize",
     technical_settings: dict[str, Any],
-    suggest_params_func: callable = suggest_gnn_params,
+    suggest_params_func: Callable = suggest_from_search_space,
     run_test: bool = True,
     pruner: optuna.pruners.BasePruner | None = None,
     sampler: optuna.samplers.BaseSampler | None = None,
+    pruning_mode: str = "epoch",
+    enqueue_params: Sequence[dict[str, Any]] | None = None,
     callbacks: Sequence[Callable[[optuna.Study, optuna.trial.FrozenTrial], None]]
     | None = None,
 ) -> optuna.Study:
@@ -217,8 +229,7 @@ def run_optuna_study_for_gnn(
 
     grid_keys = list(search_space.keys())
     grid_distributions = {
-        key: optuna.distributions.CategoricalDistribution(values)
-        for key, values in search_space.items()
+        key: param_distribution(spec) for key, spec in search_space.items()
     }
 
     storage = optuna.storages.get_storage(storage_url)
@@ -253,7 +264,8 @@ def run_optuna_study_for_gnn(
                 deepcopy=False, states=[TrialState.COMPLETE]
             ):
                 if set(trial.params) == set(grid_keys) and all(
-                    trial.params[key] in search_space[key] for key in grid_keys
+                    value_in_spec(trial.params[key], search_space[key])
+                    for key in grid_keys
                 ):
                     salvaged_trials.append(
                         optuna.trial.create_trial(
@@ -289,7 +301,9 @@ def run_optuna_study_for_gnn(
         # lets us extend the grid and continue, and retries failed combinations.
         all_combinations = [
             dict(zip(grid_keys, values))
-            for values in itertools.product(*search_space.values())
+            for values in itertools.product(
+                *(grid_values(spec) for spec in search_space.values())
+            )
         ]
 
         def _combo_key(params: dict[str, Any]) -> tuple:
@@ -313,6 +327,24 @@ def run_optuna_study_for_gnn(
             study.enqueue_trial(combo, skip_if_exists=True)
 
         n_trials_to_run = len(missing_combinations)
+    elif enqueue_params is not None:
+        # --- Fixed top-k mode ---
+        # Evaluate exactly the given parameter sets (e.g. the best combinations
+        # from another seed's full study) instead of letting the sampler
+        # explore. Enqueue them (skip_if_exists dedupes across resumes) and size
+        # the budget to their count so re-running still resumes correctly.
+        for params in enqueue_params:
+            study.enqueue_trial(params, skip_if_exists=True)
+
+        finished_trials = sum(
+            1
+            for trial in study.trials
+            if trial.state in {TrialState.COMPLETE, TrialState.PRUNED}
+        )
+        n_trials_to_run = max(0, len(enqueue_params) - finished_trials)
+
+        if n_trials_to_run == 0:
+            return study
     else:
         # --- Sampling mode (TPE / Random / CMA-ES / ...) ---
         # The sampler draws points from the same categorical choices, so
@@ -338,6 +370,7 @@ def run_optuna_study_for_gnn(
             base_params=copy.deepcopy(base_params),
             suggest_params_func=suggest_params_func,
             run_test=run_test,
+            pruning_mode=pruning_mode,
         ),
         n_jobs=optuna_n_jobs,
         n_trials=n_trials_to_run,
