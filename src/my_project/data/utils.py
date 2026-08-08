@@ -120,7 +120,7 @@ def prepare_data(
         test_size=test_size,
     )
     if feature_selection:
-        from my_project.graphs.variable_selection import select_features
+        from my_project.information_theory.variable_selection import select_features
 
         X_train, X_valid, X_test, y_train, y_valid, y_test = splits
         selected = select_features(X_train, y_train, **feature_selection)
