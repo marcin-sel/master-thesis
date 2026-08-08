@@ -1,13 +1,35 @@
-from my_project.data.preprocessing import RareCategoryTransformer, ThresholdImputer
 from sklearn.compose import ColumnTransformer
 from sklearn.compose import make_column_selector as selector
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import (
     FunctionTransformer,
+    KBinsDiscretizer,
     OrdinalEncoder,
-    StandardScaler,
+    PowerTransformer,
 )
+
+# RobustScaler,
+from my_project.data.preprocessing import (
+    BooleanMissingEncoder,
+    HighMissingDiscretizer,
+    QuantileClipper,
+    RareCategoryTransformer,
+    ThresholdImputer,
+)
+
+
+def shift_to_non_negative(x):
+    return x + 1
+
+
+def to_category_dtype(x):
+    return x.astype("category")
+
+
+high_missing_threshold = 0.10
+high_missing_n_bins = 3
+n_bins = 5
 
 dtypes_dict = {
     "number": ["number"],
@@ -18,7 +40,11 @@ dtypes_dict = {
 numeric_pipeline = Pipeline(
     [
         ("imputer", SimpleImputer(strategy="median")),
-        ("scaler", StandardScaler()),
+        ("quantile_clipper", QuantileClipper(lower=0.01, upper=0.99)),
+        # ("scaler", StandardScaler()),
+        # ("power_transformer", PowerTransformer(method="box-cox", standardize=True)),
+        ("power_transformer", PowerTransformer(method="yeo-johnson", standardize=True)),
+        # ("scaler", RobustScaler()),
     ]
 )
 
@@ -39,23 +65,35 @@ categorical_pipeline = Pipeline(
 
 boolean_pipeline = Pipeline(
     [
+        # Low-missing booleans: impute with the mode (keeps the nullable
+        # ``boolean`` dtype, so downstream dtype routing still treats them as
+        # categorical instead of continuous numbers).
         (
             "threshold_imputer",
-            ThresholdImputer(threshold=0.02, strategy="most_frequent"),
+            ThresholdImputer(
+                threshold=high_missing_threshold, strategy="most_frequent"
+            ),
+        ),
+        # High-missing booleans: keep missingness as an explicit "Missing" level
+        # instead of imputing, mirroring the numeric HighMissingDiscretizer.
+        (
+            "high_missing_encoder",
+            BooleanMissingEncoder(threshold=high_missing_threshold),
         ),
     ]
 )
 
 preprocessor_transformer = ColumnTransformer(
     [
-        ("num", numeric_pipeline, selector(dtype_include=dtypes_dict["number"])),
         (
             "cat",
             categorical_pipeline,
             selector(dtype_include=dtypes_dict["categorical"]),
         ),
         ("bool", boolean_pipeline, selector(dtype_include=dtypes_dict["boolean"])),
-    ]
+        ("num", numeric_pipeline, selector(dtype_include=dtypes_dict["number"])),
+    ],
+    verbose_feature_names_out=False,
 )
 
 ordinal_start_from_1_encoder = Pipeline(
@@ -71,7 +109,7 @@ ordinal_start_from_1_encoder = Pipeline(
         ),
         (
             "shift_to_non_negative",
-            FunctionTransformer(lambda x: x + 1, feature_names_out="one-to-one"),
+            FunctionTransformer(shift_to_non_negative, feature_names_out="one-to-one"),
         ),
     ],
 )
@@ -93,15 +131,90 @@ encoder_transformer = ColumnTransformer(
     verbose_feature_names_out=False,
 )
 
+
 preprocessing_pipeline = Pipeline(
     [
+        (
+            "high_missing_discretizer",
+            HighMissingDiscretizer(
+                threshold=high_missing_threshold, n_bins=high_missing_n_bins
+            ),
+        ),
         ("preprocessing", preprocessor_transformer),
     ]
 )
 
 preprocessing_pipeline_nn = Pipeline(
     [
+        (
+            "high_missing_discretizer",
+            HighMissingDiscretizer(
+                threshold=high_missing_threshold, n_bins=high_missing_n_bins
+            ),
+        ),
         ("preprocessing", preprocessor_transformer),
+        ("encoder", encoder_transformer),
+    ]
+)
+
+# Quantile-bin numerics, then cast to `category` so downstream dtype routing
+# treats binned numerics as categorical (embedding), like the II matrix does.
+numeric_quantile_discretizer = Pipeline(
+    [
+        (
+            "kbins",
+            KBinsDiscretizer(
+                n_bins=n_bins,
+                encode="ordinal",
+                strategy="quantile",
+                quantile_method="averaged_inverted_cdf",
+            ),
+        ),
+        (
+            "to_category",
+            FunctionTransformer(to_category_dtype, feature_names_out="one-to-one"),
+        ),
+    ]
+)
+
+discretizer_transformer = ColumnTransformer(
+    [
+        (
+            "num",
+            numeric_quantile_discretizer,
+            selector(dtype_include=dtypes_dict["number"]),
+        ),
+    ],
+    remainder="passthrough",
+    verbose_feature_names_out=False,
+)
+
+discretization_pipeline = Pipeline(
+    [
+        (
+            "high_missing_discretizer",
+            HighMissingDiscretizer(
+                threshold=high_missing_threshold, n_bins=high_missing_n_bins
+            ),
+        ),
+        ("preprocessing", preprocessor_transformer),
+        ("discretizer", discretizer_transformer),
+    ]
+)
+
+# NN input identical to what the interaction matrix is computed on: discretize
+# numerics into quantile bins, then ordinal-encode everything to integer codes,
+# so the network sees the same discrete representation as the II graph.
+discretization_pipeline_nn = Pipeline(
+    [
+        (
+            "high_missing_discretizer",
+            HighMissingDiscretizer(
+                threshold=high_missing_threshold, n_bins=high_missing_n_bins
+            ),
+        ),
+        ("preprocessing", preprocessor_transformer),
+        ("discretizer", discretizer_transformer),
         ("encoder", encoder_transformer),
     ]
 )

@@ -27,7 +27,7 @@ MODELING_FEATURES = [
     "RRSkurcz",
     "RRRozkurcz",
     "ZatokowyvsInny",
-    "NYHA",
+    # "NYHA",
     "DomTypObjawow",
     "EkgST",
     "EkgHR",
@@ -38,7 +38,6 @@ MODELING_FEATURES = [
     "RozpoznanieOZW",
     "SegmentOZW",
     "Rozpoznanie_Glowne",
-    "TroponinaT",
     # --- leczenie / procedury ---
     "PCI",
     "CABG",
@@ -50,18 +49,18 @@ MODELING_FEATURES = [
     # "dawka",
     "rehabilitacja",
     # --- hospitalizacja ---
-    "dni_pobytu",
+    # "dni_pobytu",
     # --- badania laboratoryjne ---
     "alt",
     "aptt",
     "ast",
     "basob",
     "chol",
-    "crp",
+    # "crp",
     "eosp",
     "fib",
     "gfr",
-    "hba1c",
+    # "hba1c",
     "hct",
     "hdl",
     "hgb",
@@ -80,6 +79,8 @@ MODELING_FEATURES = [
     "trg",
     "tro",
     "trot",
+    "troponin_ratio",
+    # "TroponinaT",
     "tsh",
     "tt",
     "ur",
@@ -89,6 +90,38 @@ MODELING_FEATURES = [
     # "powiazano",
 ]
 
-# Columns persisted after cleaning. By default = features + target; append extra
-# columns here to keep them in the saved file without using them as features.
+
+PIESZKO2019_ML_FEATURES = [
+    # --- demografia / antropometria ---
+    "wiek",  # Age
+    "plec_binary",  # Sex
+    "bmi",  # Body mass index
+    # --- pomiary przy przyjęciu ---
+    "RRSkurcz",  # Systolic blood pressure
+    "RRRozkurcz",  # Diastolic blood pressure
+    "EkgHR",  # Heart rate (najbliższy odpowiednik)
+    # --- markery hematologiczne / zapalne ---
+    "trot",  # Troponin elevation ratio
+    "tro",  # Troponin elevation ratio
+    # "troponin_ratio", # Troponin elevation ratio
+    "nlr",  # Neutrophil to lymphocyte ratio
+    "plr",  # Platelet to lymphocyte ratio
+    "rdw",  # Red cell distribution width
+    "neu",  # Neutrophil count
+    "lymb",  # Lymphocyte count (Table 1)
+    "plt",  # Platelet count
+    "hgb",  # Hemoglobin
+    "mcv",  # Mean cell volume
+    # --- biochemia / krzepnięcie ---
+    "kr",  # Creatinine
+    "na",  # Sodium
+    "pt",  # Prothrombin time
+    "fib",  # Fibrinogen
+    "ldl",  # LDL (Table 1)
+    # "crp",       # C-reactive protein — BRAK w Twoim configs/columns.py
+]
+
+MODELING_FEATURES = PIESZKO2019_ML_FEATURES
+
+
 KEEP_AFTER_CLEANING = MODELING_FEATURES + [TARGET]
