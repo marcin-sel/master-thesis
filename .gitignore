@@ -38,6 +38,9 @@ Thumbs.db
 tmp/
 temp/
 
+# Local trash
+.trash/
+
 # Secrets / local config
 .env
 .env.*
