@@ -23,8 +23,53 @@ MEASURES = (
 )
 
 
-def _mi_joint(stacked: np.ndarray, y: np.ndarray, *, estimator: str = "ML") -> float:
+def _combine_codes(rows: Sequence[np.ndarray]) -> np.ndarray:
+    """Fold several integer code arrays (one variable each) into a single code.
+
+    Each row is shifted to start at ``0`` and mixed in with a positional radix
+    (``combined * cardinality + row``), so the result is a unique integer code
+    per joint outcome -- i.e. the code of the tuple ``(row_0, row_1, ...)``.
+    """
+    combined: np.ndarray | None = None
+    for row in rows:
+        row = np.asarray(row)
+        row = row - row.min()
+        if combined is None:
+            combined = row.astype(np.int64)
+        else:
+            combined = combined * (int(row.max()) + 1) + row
+    return combined
+
+
+def _mi_from_codes(a: np.ndarray, b: np.ndarray) -> float:
+    """I(a; b) in bits from a plug-in (relative-frequency) contingency table.
+
+    Both inputs must be integer code arrays. This is the vectorized
+    maximum-likelihood ("ML") estimator: it matches pyitlib's ``estimator="ML"``
+    up to floating point, but is computed from a single ``np.bincount`` instead
+    of per-call entropy estimation, which is dramatically faster.
+    """
+    a = np.asarray(a)
+    b = np.asarray(b)
+    a = a - a.min()
+    b = b - b.min()
+    ca = int(a.max()) + 1
+    cb = int(b.max()) + 1
+    n = a.shape[0]
+    joint = np.bincount(a * cb + b, minlength=ca * cb).astype(np.float64)
+    joint = joint.reshape(ca, cb)
+    pij = joint / n
+    pi = pij.sum(axis=1, keepdims=True)
+    pj = pij.sum(axis=0, keepdims=True)
+    mask = joint > 0
+    outer = pi @ pj
+    return float(np.sum(pij[mask] * np.log2(pij[mask] / outer[mask])))
+
+
+def _mi_joint(stacked: np.ndarray, y: np.ndarray, *, estimator: str = "numpy") -> float:
     """I((X1, X2, ...); y) for a stack of variables (one row per variable)."""
+    if estimator == "numpy":
+        return _mi_from_codes(_combine_codes(stacked), y)
     return float(
         drv.entropy_joint(stacked, estimator=estimator)
         + drv.entropy(y, estimator=estimator)
@@ -32,8 +77,10 @@ def _mi_joint(stacked: np.ndarray, y: np.ndarray, *, estimator: str = "ML") -> f
     )
 
 
-def _mi_pair(x1: np.ndarray, x2: np.ndarray, *, estimator: str = "ML") -> float:
+def _mi_pair(x1: np.ndarray, x2: np.ndarray, *, estimator: str = "numpy") -> float:
     """I(x1; x2): mutual information between two features, independent of y."""
+    if estimator == "numpy":
+        return _mi_from_codes(x1, x2)
     return float(drv.information_mutual(x1, x2, estimator=estimator))
 
 
@@ -79,7 +126,7 @@ def compute_information_matrices(
     *,
     measures: str | Sequence[str] = MEASURES,
     encode: bool = True,
-    estimator: str = "ML",
+    estimator: str = "numpy",
     n_bins: int | None = None,
     n_jobs: int | None = None,
 ) -> dict[str, pd.DataFrame]:
@@ -96,11 +143,19 @@ def compute_information_matrices(
 
     Each returned matrix is a symmetric ``DataFrame`` indexed by the columns of
     ``X`` with a zero diagonal. ``y`` is required unless ``measures`` requests
-    only ``"feature_mi"``. ``estimator`` is forwarded to pyitlib. Pass a single
+    only ``"feature_mi"``. ``estimator`` selects the mutual-information
+    estimator: ``"numpy"`` (default) is a fast vectorized plug-in
+    (relative-frequency / maximum-likelihood) estimator computed via contingency
+    tables; any other value is forwarded to :mod:`pyitlib` as its ``estimator``
+    (e.g. ``"ML"``, ``"JAMES-STEIN"``). Values are in bits. Pass a single
     measure name to get a one-entry dict. ``n_jobs`` is forwarded to
     :class:`joblib.Parallel`, spreading the per-pair work across processes
     (``None``/``1`` runs serially, ``-1`` uses all cores).
     """
+
+    X = X.copy()
+    y = y.copy() if y is not None else None
+
     if isinstance(measures, str):
         measures = (measures,)
     measures = tuple(measures)
@@ -111,10 +166,17 @@ def compute_information_matrices(
         raise ValueError(f"Unknown measures {sorted(unknown)}; choose from {MEASURES}.")
 
     if n_bins is not None:
-        X = (
-            X.apply(pd.qcut, q=n_bins, axis=0, labels=False).copy()
-            if n_bins
-            else X.copy()
+        X_nunique = X.nunique()
+        to_bin_cols = X_nunique[X_nunique > n_bins].index
+        if not to_bin_cols.any():
+            raise ValueError(
+                f"n_bins={n_bins} is too large; all {X.shape[1]} columns have "
+                f"fewer unique values than that."
+            )
+        X[to_bin_cols] = (
+            X[to_bin_cols]
+            .apply(pd.qcut, q=n_bins, axis=0, labels=False, duplicates="drop")
+            .copy()
         )
 
     if encode:
@@ -199,7 +261,7 @@ def to_probability(matrix: pd.DataFrame) -> pd.DataFrame:
         return np.searchsorted(flat, value, side="right") / n
 
     result = matrix.map(cdf)
-    np.fill_diagonal(result.values, 0.0)
+    # np.fill_diagonal(result.values, 0.0)
 
     return result
 
@@ -232,8 +294,9 @@ class InformationGraphBuilder(GraphBuilder):
         Map the matrix through its empirical CDF so the threshold behaves like a
         quantile (``threshold=0`` => full graph, ``threshold=1`` => empty).
     estimator:
-        Probability estimator forwarded to :mod:`pyitlib` (``"ML"`` for the
-        plug-in maximum-likelihood / relative-frequency estimator, or a
+        Mutual-information estimator. ``"numpy"`` (default) is the fast
+        vectorized plug-in (relative-frequency / maximum-likelihood) estimator;
+        any other value is forwarded to :mod:`pyitlib` (e.g. ``"ML"``, or a
         shrinkage estimator such as ``"PERKS"`` / ``"MINIMAX"``).
     matrix:
         Optional precomputed *raw* (unprocessed) matrix for the chosen measure,
@@ -255,7 +318,7 @@ class InformationGraphBuilder(GraphBuilder):
         encode: bool = True,
         n_bins: int | None = None,
         probability: bool = True,
-        estimator: str = "ML",
+        estimator: str = "numpy",
         matrix: pd.DataFrame | None = None,
         n_jobs: int | None = None,
     ):
