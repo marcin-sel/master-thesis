@@ -1,5 +1,6 @@
 import importlib.util
 import os
+from typing import Any, Callable
 
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -79,3 +80,58 @@ def shuffle_X(X, pct, seed):
         mask = rng.random(len(X)) < pct
         X_shuffled.loc[mask, col] = rng.permutation(X_shuffled.loc[mask, col].values)
     return X_shuffled
+
+
+def prepare_data(
+    generate: Callable[..., dict[str, Any]],
+    n_samples: int,
+    data_seed: int,
+    *,
+    test_size: int,
+    valid_size: int | None = None,
+    noise_level: float | None = None,
+    feature_selection: dict | None = None,
+    **gen_kwargs,
+):
+    """Generate one dataset and split it into train/valid/test.
+
+    ``generate`` is a bound generator callable (see
+    ``my_project.data.generators.build_generator``). Extra ``gen_kwargs``
+    (e.g. ``cov``) are forwarded straight to it. When ``feature_selection`` is a
+    kwargs dict it is fitted on TRAIN only and applied to valid/test (no
+    leakage); true-interaction edges whose endpoints were dropped are removed so
+    graph stats stay consistent with the kept features.
+    """
+    data_dict = generate(n_samples=n_samples, random_state=data_seed, **gen_kwargs)
+    X = data_dict["X"]
+    y = data_dict["y"]
+    true_edges = data_dict["true_interactions"]
+    if noise_level and noise_level > 0:
+        X = shuffle_X(X, pct=noise_level, seed=data_seed)
+    if valid_size is None:
+        valid_size = int(0.15 * (n_samples - test_size))
+    train_size = n_samples - test_size - valid_size
+    splits = split_data(
+        X,
+        y,
+        random_state=data_seed,
+        train_size=train_size,
+        valid_size=valid_size,
+        test_size=test_size,
+    )
+    if feature_selection:
+        from my_project.graphs.variable_selection import select_features
+
+        X_train, X_valid, X_test, y_train, y_valid, y_test = splits
+        selected = select_features(X_train, y_train, **feature_selection)
+        splits = (
+            X_train[selected],
+            X_valid[selected],
+            X_test[selected],
+            y_train,
+            y_valid,
+            y_test,
+        )
+        selected_set = set(selected)
+        true_edges = [e for e in true_edges if all(v in selected_set for v in e)]
+    return true_edges, splits
