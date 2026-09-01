@@ -116,19 +116,39 @@ class RareCategoryTransformer(BaseEstimator, TransformerMixin):
         Value to substitute for rare categories (default: NaN).
     include_nan : bool
         Whether to include NaN when computing frequencies.
+    preserve_values : iterable or None
+        Values that must not be replaced even when they are infrequent.
+    min_group_frequency : float or None
+        If set, use ``replace_with`` only when all rare categories together
+        reach this relative frequency. Otherwise use ``fallback_replace_with``.
+    fallback_replace_with : scalar
+        Replacement used when the combined rare-category frequency is below
+        ``min_group_frequency``.
     """
 
     def __init__(
-        self, min_frequency=0.01, min_count=None, replace_with=np.nan, include_nan=True
+        self,
+        min_frequency=0.01,
+        min_count=None,
+        replace_with=np.nan,
+        include_nan=True,
+        preserve_values=None,
+        min_group_frequency=None,
+        fallback_replace_with=np.nan,
     ):
         self.min_frequency = min_frequency
         self.min_count = min_count
         self.replace_with = replace_with
         self.include_nan = include_nan
+        self.preserve_values = preserve_values
+        self.min_group_frequency = min_group_frequency
+        self.fallback_replace_with = fallback_replace_with
 
     def fit(self, X, y=None):
         X = pd.DataFrame(X)
         self.frequent_categories_ = {}
+        self.rare_frequencies_ = {}
+        self.replacement_values_ = {}
 
         for col in X.columns:
             counts = X[col].value_counts(dropna=not self.include_nan)
@@ -139,7 +159,20 @@ class RareCategoryTransformer(BaseEstimator, TransformerMixin):
             else:
                 mask = counts >= self.min_count
 
-            self.frequent_categories_[col] = set(counts[mask].index)
+            frequent = set(counts[mask].index)
+            if self.preserve_values is not None:
+                frequent.update(self.preserve_values)
+            self.frequent_categories_[col] = frequent
+
+            rare_count = counts[~counts.index.isin(frequent)].sum()
+            rare_frequency = rare_count / counts.sum() if counts.sum() else 0.0
+            self.rare_frequencies_[col] = rare_frequency
+            self.replacement_values_[col] = (
+                self.replace_with
+                if self.min_group_frequency is None
+                or rare_frequency >= self.min_group_frequency
+                else self.fallback_replace_with
+            )
 
         return self
 
@@ -149,7 +182,7 @@ class RareCategoryTransformer(BaseEstimator, TransformerMixin):
         for col in X.columns:
             X[col] = X[col].astype(object)
             mask = ~X[col].isin(self.frequent_categories_[col])
-            X.loc[mask, col] = self.replace_with
+            X.loc[mask, col] = self.replacement_values_[col]
 
         return X
 
