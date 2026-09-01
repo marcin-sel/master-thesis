@@ -141,16 +141,6 @@ def save_table(
 def format_latex_bold_best(summary_table, *, rank_col=("mean rank", "", "")):
     """Format a (mean/std/rank) summary table into LaTeX-ready strings.
 
-    Within each config column the best ``mean`` is bolded (``\\textbf``); per-config
-    ranks are integers, the overall ``rank_col`` shows 2 decimals, and all
-    index/column labels are LaTeX-escaped (e.g. ``_`` in ``ii_permuted``). Expects
-    the column MultiIndex whose last level is the stat name (``mean``/``std``/``rank``).
-    """
-
-
-def format_latex_bold_best(summary_table, *, rank_col=("mean rank", "", "")):
-    """Format a (mean/std/rank) summary table into LaTeX-ready strings.
-
     Within each config the best row (highest ``mean``) is bolded across *all* its
     stats (``mean``, ``std`` and ``rank``); per-config ranks are integers, the
     overall ``rank_col`` shows 2 decimals, and all index/column labels are
