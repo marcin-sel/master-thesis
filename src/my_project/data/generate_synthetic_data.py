@@ -287,6 +287,7 @@ def generate_f_data(
     classification: bool = True,
     normalize: bool = True,
     noise_std: float = 0.0,
+    **_ignored,
 ):
     if function_id not in FUNCTIONS:
         raise ValueError("function_id must be in the range 1-10.")
@@ -373,6 +374,7 @@ def generate_xor_with_main_effects(
     intercept: float = 0.0,
     random_state: int = 42,
     weights=None,
+    **_ignored,
 ) -> tuple[pd.DataFrame, pd.Series, list[tuple[str, str]]]:
     rng = np.random.default_rng(random_state)
 

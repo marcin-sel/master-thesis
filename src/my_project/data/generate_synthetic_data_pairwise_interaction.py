@@ -240,6 +240,7 @@ def generate_pairwise_interaction_data(
     shuffle: bool = True,
     random_state: int | None = None,
     return_interactions: bool = False,
+    **_ignored,
 ) -> dict[str, pd.DataFrame | pd.Series | list[str]]:
     """Generate a classification problem with explicit pairwise interactions.
 
