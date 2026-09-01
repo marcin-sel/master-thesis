@@ -89,6 +89,7 @@ def run_gnn_tuning(
     preprocessing_pipeline=None,
     show_metrics_progress=False,
     pruning_warmup_steps=None,
+    run_test=True,
 ):
     from .run_optuna_study import build_cv_datamodules, run_optuna_study_for_gnn
 
@@ -283,14 +284,25 @@ def run_gnn_tuning(
         enqueue_params=enqueue_params,
         pruning_mode=pruning_mode,
         callbacks=callbacks,
+        run_test=run_test,
     )
 
     best = study.best_trial
+    mean_metrics = best.user_attrs.get("mean_metrics", {})
+    if not run_test:
+        mean_metrics = {
+            name: value
+            for name, value in mean_metrics.items()
+            if not name.startswith(("test/", "mean_test/", "std_test/"))
+        }
     return {
         "model_cls": model_cls.__name__,
         "graph_name": graph_name,
+        "study_name": study_name,
         "best_value": study.best_value,
-        **best.user_attrs.get("mean_metrics", {}),
+        "best_params": best.user_attrs.get("params", dict(best.params)),
+        "best_epochs": best.user_attrs.get("best_epochs", []),
+        **mean_metrics,
     }
 
 
@@ -491,6 +503,7 @@ def run_fixed_folds_sweep(
     permuted_top_k=None,
     preprocessing_pipeline=None,
     pruning_warmup_steps=None,
+    run_test=True,
 ):
     """Run tuning on a fixed set of precomputed folds and per-fold graphs."""
     results = []
@@ -546,6 +559,7 @@ def run_fixed_folds_sweep(
                     permuted_top_k=permuted_top_k,
                     preprocessing_pipeline=preprocessing_pipeline,
                     pruning_warmup_steps=pruning_warmup_steps,
+                    run_test=run_test,
                 )
             )
 
@@ -589,6 +603,7 @@ def run_fixed_folds_sweep(
                 main_data_seed=main_data_seed,
                 preprocessing_pipeline=preprocessing_pipeline,
                 pruning_warmup_steps=pruning_warmup_steps,
+                run_test=run_test,
             )
         )
 
