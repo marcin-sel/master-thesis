@@ -29,11 +29,17 @@ def permute_nodes(graph: nx.Graph, seed: int = 42) -> nx.Graph:
 
     The permutation is deterministic given the same ``seed``.
     """
+    mapping = build_node_permutation(list(graph.nodes), seed)
+    graph_permuted = nx.relabel_nodes(graph, mapping)
+    graph_permuted.graph["node_permutation"] = mapping
+    return graph_permuted
+
+
+def build_node_permutation(nodes, seed: int = 42) -> dict:
+    """Build a deterministic label mapping from a reference node order."""
+    nodes = list(nodes)
     rng = np.random.default_rng(seed)
-    nodes = list(graph.nodes)
-    permuted_nodes = rng.permutation(nodes)
-    mapping = dict(zip(nodes, permuted_nodes))
-    return nx.relabel_nodes(graph, mapping)
+    return dict(zip(nodes, rng.permutation(nodes)))
 
 
 def graph_from_matrix_top_n(matrix: pd.DataFrame, n_edges: int) -> nx.Graph:

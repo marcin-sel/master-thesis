@@ -13,6 +13,7 @@ from my_project.graphs.information_graphs_with_edge_cife import (
     EdgeInteractionGraphBuilder,
 )
 from my_project.graphs.utils import (
+    build_node_permutation,
     graph_from_matrix,
     graph_from_matrix_top_n,
     graph_stats,
@@ -26,6 +27,7 @@ __all__ = [
     "InformationGraphBuilder",
     "build_base_graphs",
     "build_ii_graphs",
+    "build_node_permutation",
     "build_true_graph",
     "graph_from_matrix",
     "graph_from_matrix_top_n",

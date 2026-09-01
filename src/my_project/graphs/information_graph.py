@@ -151,13 +151,16 @@ def build_ii_graphs(
     threshold=None,
     n_bins=None,
     n_edges=None,
+    permutation_mappings=None,
 ):
     """Graphs built from the interaction-information matrix.
 
     Provide either ``threshold`` (a quantile in [0, 1] applied to the
     CDF-processed matrix, i.e. the fraction of edges to drop) or ``n_edges``
     (keep exactly the top-N pairs). ``n_edges`` takes precedence when both are
-    given. Also returns one permuted copy per seed in ``permute_seeds``.
+    given. Also returns one permuted copy per seed in ``permute_seeds``. Pass
+    mappings built from a reference column order to keep feature relabeling fixed
+    across independently constructed interaction graphs.
     """
     if n_edges is not None:
         graph_ii = graph_from_matrix_top_n(ii, n_edges)
@@ -167,5 +170,15 @@ def build_ii_graphs(
         )
     graphs = {"ii": graph_ii}
     for s in permute_seeds:
-        graphs[f"ii_permuted_{s}"] = permute_nodes(graph_ii, seed=s)
+        if permutation_mappings is None:
+            graph_permuted = permute_nodes(graph_ii, seed=s)
+        else:
+            mapping = permutation_mappings[s]
+            if set(mapping) != set(graph_ii.nodes):
+                raise ValueError(
+                    "Reference permutation nodes do not match the current graph nodes."
+                )
+            graph_permuted = nx.relabel_nodes(graph_ii, mapping)
+            graph_permuted.graph["node_permutation"] = mapping
+        graphs[f"ii_permuted_{s}"] = graph_permuted
     return graphs
