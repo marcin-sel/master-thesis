@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
+from matplotlib.ticker import PercentFormatter
 
 
 def pair_table_from_matrix(
@@ -275,6 +276,133 @@ def plot_ii_by_edges(
     return ax
 
 
+def plot_category_barplots(
+    X: pd.DataFrame,
+    y=None,
+    *,
+    columns: Sequence | None = None,
+    n_cols: int = 7,
+    normalize: bool = True,
+    max_categories: int | None = None,
+    min_frequency: float | None = None,
+    other_label: str = "Inne",
+    category_order: Sequence | None = None,
+    legend_title: str = "y",
+    legend_bbox_y: float = -0.05,
+    by_columns: bool = False,
+    show_values: bool = True,
+) -> plt.Figure:
+    """Grid of per-feature bar plots of category frequencies coloured by class.
+
+    Categorical counterpart of :func:`plot_feature_histograms`: one panel per
+    column of ``X`` (or ``columns`` if given). With ``y`` the bars are grouped
+    per class; without it a single bar per category is drawn. ``normalize=True``
+    plots proportions (share within each class), ``False`` raw counts.
+    ``max_categories`` keeps only the most frequent categories per feature.
+    ``min_frequency`` groups categories whose overall non-missing share is below
+    the threshold into ``other_label`` before plotting. The grouping is learned
+    from all rows, so with ``y`` the meaning of the aggregate category remains
+    identical across classes.
+    ``category_order`` fixes the x-axis order (case-insensitive, e.g.
+    ``["low", "medium", "high", "missing"]``); categories not listed are appended
+    in descending frequency. Unused panels are hidden and a single shared legend
+    is placed below the grid. ``by_columns=True`` fills panels column-first.
+    ``show_values=True`` labels non-zero bars as percentages when normalized and
+    as integer counts otherwise.
+    """
+    if min_frequency is not None and not 0 <= min_frequency <= 1:
+        raise ValueError("min_frequency must be between 0 and 1.")
+
+    cols = list(X.columns if columns is None else columns)
+    n_features = len(cols)
+    n_rows = int(np.ceil(n_features / n_cols))
+
+    order_rank = (
+        {str(c).lower(): i for i, c in enumerate(category_order)}
+        if category_order is not None
+        else None
+    )
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 2.6 * n_rows))
+    axes = np.atleast_1d(axes)
+    axes = axes.ravel(order="F") if by_columns else axes.ravel()
+
+    ylabel = "%" if normalize else "liczność"
+    for ax, col in zip(axes, cols):
+        values = X[col].astype(object)
+        if min_frequency is not None:
+            frequencies = values.value_counts(normalize=True)
+            rare_categories = frequencies[frequencies < min_frequency].index
+            values = values.where(~values.isin(rare_categories), other_label)
+
+        order = values.value_counts().index
+        if max_categories is not None:
+            order = order[:max_categories]
+        if order_rank is not None:
+            # Stable sort keeps unlisted categories in descending-frequency order.
+            order = sorted(
+                order, key=lambda c: order_rank.get(str(c).lower(), len(order_rank))
+            )
+        labels = [str(c) for c in order]
+        if y is not None:
+            classes = sorted(pd.Series(y).unique())
+            width = 0.8 / len(classes)
+            positions = np.arange(len(order))
+            for i, cls in enumerate(classes):
+                heights = (
+                    values.loc[pd.Series(y, index=X.index) == cls]
+                    .value_counts(normalize=normalize)
+                    .reindex(order, fill_value=0)
+                    .to_numpy()
+                )
+                bars = ax.bar(
+                    positions + i * width, heights, width=width, label=f"y={cls}"
+                )
+                if show_values:
+                    labels_above = [
+                        (f"{value:.1%}" if normalize else f"{value:.0f}")
+                        if value > 0
+                        else ""
+                        for value in heights
+                    ]
+                    ax.bar_label(bars, labels=labels_above, padding=2, fontsize=7)
+            ax.set_xticks(positions + width * (len(classes) - 1) / 2)
+            ax.set_xticklabels(labels, rotation=45, ha="right")
+        else:
+            heights = values.value_counts(normalize=normalize).reindex(order).to_numpy()
+            bars = ax.bar(labels, heights)
+            if show_values:
+                labels_above = [
+                    (f"{value:.1%}" if normalize else f"{value:.0f}")
+                    if value > 0
+                    else ""
+                    for value in heights
+                ]
+                ax.bar_label(bars, labels=labels_above, padding=2, fontsize=7)
+            ax.tick_params(axis="x", rotation=45)
+        ax.set_title(col, fontsize=9)
+        ax.set_ylabel(ylabel, fontsize=8)
+        if normalize:
+            ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0, decimals=0))
+        ax.tick_params(labelsize=7)
+        if show_values:
+            ax.margins(y=0.15)
+    for ax in axes[n_features:]:
+        ax.axis("off")
+    if y is not None:
+        handles, labels = axes[0].get_legend_handles_labels()
+        fig.legend(
+            handles,
+            labels,
+            title=legend_title,
+            loc="lower center",
+            bbox_to_anchor=(0.5, legend_bbox_y),
+            ncol=len(labels),
+        )
+    fig.tight_layout()
+    return fig
+
+
 __all__ = [
     "pair_table_from_matrix",
     "pairwise_ii_mi_table",
@@ -283,5 +411,6 @@ __all__ = [
     "plot_ii_graph",
     "plot_class_balance",
     "plot_feature_histograms",
+    "plot_category_barplots",
     "plot_ii_by_edges",
 ]
