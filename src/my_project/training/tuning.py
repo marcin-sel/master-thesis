@@ -348,13 +348,14 @@ def objective(
                 except (AttributeError, ValueError, TypeError):
                     continue
 
-            test_dataloader = data_fold.test_dataloader()
-            if run_test and test_dataloader is not None:
-                trainer.test(
-                    dataloaders=test_dataloader,
-                    ckpt_path="best",
-                    verbose=False,
-                )
+            if run_test:
+                test_dataloader = data_fold.test_dataloader()
+                if test_dataloader is not None:
+                    trainer.test(
+                        dataloaders=test_dataloader,
+                        ckpt_path="best",
+                        verbose=False,
+                    )
 
             for metric_name, metric_value in trainer.callback_metrics.items():
                 try:
