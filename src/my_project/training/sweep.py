@@ -167,9 +167,10 @@ def run_sweep(
                     base_info = graph_stats(base_graphs, true_edges_s)
                     print(
                         f"\\n=== data_seed={data_seed} | n_samples={n_samples} "
-                        f"| cov={cov} | noise={noise_level} | base ==="
+                        f"| cov={cov} | noise={noise_level} | xgboost ==="
                     )
 
+                    # XGBoost first (graph-independent baseline).
                     results.extend(
                         run_config(
                             base_graphs,
@@ -178,7 +179,8 @@ def run_sweep(
                             base_tags={**common_tags, "threshold": None},
                             experiment_name=experiment_name,
                             run_xgb=True,
-                            run_mlp=True,
+                            run_mlp=False,
+                            run_gnn=False,
                             model_configs=model_configs,
                             model_classes=model_classes,
                             conv_layer=conv_layer,
@@ -256,6 +258,42 @@ def run_sweep(
                                 cv_splits=cv_splits,
                             )
                         )
+
+                    # Base graphs (fully_connected/empty/oracle) then MLP last.
+                    print(
+                        f"\\n=== data_seed={data_seed} | n_samples={n_samples} "
+                        f"| cov={cov} | noise={noise_level} | base+mlp ==="
+                    )
+                    results.extend(
+                        run_config(
+                            base_graphs,
+                            base_info,
+                            splits,
+                            base_tags={**common_tags, "threshold": None},
+                            experiment_name=experiment_name,
+                            run_xgb=False,
+                            run_mlp=True,
+                            run_gnn=True,
+                            model_configs=model_configs,
+                            model_classes=model_classes,
+                            conv_layer=conv_layer,
+                            search_space=search_space,
+                            technical_settings=technical_settings,
+                            direction=direction,
+                            n_trials=n_trials,
+                            sampler_seed=data_seed,
+                            data_seed=data_seed,
+                            optuna_storage=optuna_storage,
+                            standardize=standardize,
+                            keep_on_gpu=keep_on_gpu,
+                            n_startup_trials=n_startup_trials,
+                            top_k=top_k,
+                            main_data_seed=main_data_seed,
+                            permuted_top_k=permuted_top_k,
+                            preprocessing_pipeline=preprocessing_pipeline,
+                            cv_splits=cv_splits,
+                        )
+                    )
     return results
 
 

@@ -294,6 +294,7 @@ def run_config(
     experiment_name,
     run_xgb,
     run_mlp,
+    run_gnn=True,
     model_configs=None,
     model_classes=None,
     conv_layer=None,
@@ -372,7 +373,7 @@ def run_config(
     mlp_configs = [c for c in expanded_configs if c["model_cls"] is MyMLP]
     gnn_configs = [c for c in expanded_configs if c["model_cls"] is not MyMLP]
 
-    for cfg in gnn_configs:
+    for cfg in gnn_configs if run_gnn else []:
         model_cls = cfg["model_cls"]
         for graph_name, graph_train in graphs.items():
             stats = edges_info.get(graph_name, {})
