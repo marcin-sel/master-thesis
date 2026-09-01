@@ -8,7 +8,12 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
-from matplotlib.ticker import PercentFormatter
+from matplotlib.ticker import FuncFormatter, PercentFormatter
+
+
+def _format_decimal_float(value: float, _position: int) -> str:
+    label = np.format_float_positional(value, precision=8, trim="-")
+    return label if "." in label else f"{label}.0"
 
 
 def pair_table_from_matrix(
@@ -199,48 +204,82 @@ def plot_class_balance(
 
 def plot_feature_histograms(
     X: pd.DataFrame,
-    y,
+    y=None,
     *,
     columns: Sequence | None = None,
     n_cols: int = 7,
     bins: int = 40,
     legend_title: str = "y",
     legend_bbox_y: float = -0.05,
+    by_columns: bool = False,
+    trim_quantiles: tuple[float, float] | None = None,
+    tail_iqr_multiplier: float = 3.0,
 ) -> plt.Figure:
     """Grid of per-feature step histograms coloured by class ``y``.
 
     One panel per column of ``X`` (or ``columns`` if given), each overlaying a
     density histogram per class. Unused panels are hidden and a single shared
-    legend is placed below the grid.
+    legend is placed below the grid. With ``by_columns=True`` panels are filled
+    column-first (top-to-bottom) instead of the default row-first order. If
+    ``y`` is ``None`` a single unlabelled histogram is drawn per feature and the
+    legend is omitted. ``trim_quantiles`` can limit only tails extending beyond
+    ``tail_iqr_multiplier`` times the IQR without modifying the input data.
     """
+    if trim_quantiles is not None:
+        lower_q, upper_q = trim_quantiles
+        if not 0 <= lower_q < upper_q <= 1:
+            raise ValueError("trim_quantiles must satisfy 0 <= lower < upper <= 1.")
+
     cols = list(X.columns if columns is None else columns)
     n_features = len(cols)
     n_rows = int(np.ceil(n_features / n_cols))
 
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 2.6 * n_rows))
-    axes = np.atleast_1d(axes).ravel()
+    axes = np.atleast_1d(axes)
+    axes = axes.ravel(order="F") if by_columns else axes.ravel()
+
     for ax, col in zip(axes, cols):
-        for cls in sorted(pd.Series(y).unique()):
-            ax.hist(
-                X.loc[y == cls, col].dropna(),
-                bins=bins,
-                histtype="step",
-                density=True,
-                label=f"y={cls}",
-            )
-        ax.set_title(col, fontsize=9)
+        x = X[col].dropna()
+        plotted_x = x
+        if trim_quantiles is not None and not x.empty:
+            q1, q3 = x.quantile([0.25, 0.75])
+            iqr = q3 - q1
+            lower_bound, upper_bound = x.min(), x.max()
+            if iqr > 0:
+                if q1 - x.min() > tail_iqr_multiplier * iqr:
+                    lower_bound = x.quantile(lower_q)
+                if x.max() - q3 > tail_iqr_multiplier * iqr:
+                    upper_bound = x.quantile(upper_q)
+            plotted_x = x[x.between(lower_bound, upper_bound)]
+
+        if y is not None:
+            for cls in sorted(pd.Series(y).unique()):
+                ax.hist(
+                    plotted_x.loc[pd.Series(y, index=X.index) == cls],
+                    bins=bins,
+                    histtype="step",
+                    density=True,
+                    label=f"y={cls}",
+                )
+        else:
+            ax.hist(plotted_x, bins=bins, histtype="step", density=True)
+        # ax.set_xlabel(col, fontsize=8)
+        title = col
+        ax.set_title(title, fontsize=9)
+        ax.yaxis.set_major_formatter(FuncFormatter(_format_decimal_float))
         ax.tick_params(labelsize=7)
     for ax in axes[n_features:]:
         ax.axis("off")
-    handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(
-        handles,
-        labels,
-        title=legend_title,
-        loc="lower center",
-        bbox_to_anchor=(0.5, legend_bbox_y),
-        ncol=len(labels),
-    )
+    if y is not None:
+        handles, labels = axes[0].get_legend_handles_labels()
+        fig.legend(
+            handles,
+            labels,
+            title=legend_title,
+            loc="lower center",
+            bbox_to_anchor=(0.5, legend_bbox_y),
+            ncol=len(labels),
+        )
     fig.tight_layout()
     return fig
 
