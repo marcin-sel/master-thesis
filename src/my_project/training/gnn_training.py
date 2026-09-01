@@ -113,8 +113,17 @@ def run_gnn_tuning(
             f"graphs/folds length mismatch: {len(graphs_per_fold)} graphs for {len(folds)} folds"
         )
 
-    graph_template = graphs_per_fold[0]
-    columns = list(graph_template.nodes())
+    # Keep every column any fold's graph needs (per-fold graphs may differ, e.g.
+    # permuted variants). When preprocessing is active, retain the full raw
+    # frame because transformed graph nodes may depend on source columns with
+    # different names (for example, ``tro`` + ``trot`` -> ``troponin``).
+    # build_cv_datamodules aligns transformed columns to graph nodes per fold.
+    needed_nodes = set().union(*(g.nodes() for g in graphs_per_fold))
+    columns = (
+        list(X_all.columns)
+        if preprocessing_pipeline is not None
+        else [c for c in X_all.columns if c in needed_nodes]
+    )
 
     if preprocessing_pipeline is None and standardize:
         preprocessing_pipeline = Pipeline([("scaler", StandardScaler())]).set_output(
