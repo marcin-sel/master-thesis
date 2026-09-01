@@ -12,6 +12,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from mlflow.tracking import MlflowClient
 
 from my_project.training.training import train_gnn
+from my_project.training.training_helpers import resolve_artifact_location
 
 
 def _parse_spec(spec):
@@ -239,7 +240,10 @@ def objective(
         mlflow_client = MlflowClient(tracking_uri=tracking_uri)
         exp = mlflow_client.get_experiment_by_name(experiment_name)
         if exp is None:
-            experiment_id = mlflow_client.create_experiment(experiment_name)
+            experiment_id = mlflow_client.create_experiment(
+                experiment_name,
+                artifact_location=resolve_artifact_location(tracking_uri),
+            )
         else:
             experiment_id = exp.experiment_id
 
