@@ -9,14 +9,6 @@ import copy
 
 from sklearn import config_context
 
-from my_project.training import gnn_training, xgboost_training
-
-run_config = gnn_training.run_config
-run_fixed_folds_sweep = gnn_training.run_fixed_folds_sweep
-run_gnn_tuning = gnn_training.run_gnn_tuning
-binary_metrics = xgboost_training.binary_metrics
-run_xgboost_fixed_folds_study = xgboost_training.run_xgboost_fixed_folds_study
-tune_xgboost = xgboost_training.tune_xgboost
 from my_project.data.utils import prepare_data_fixed_test
 from my_project.graphs import (
     build_base_graphs,
@@ -26,6 +18,14 @@ from my_project.graphs import (
     graph_stats,
 )
 from my_project.information_theory import compute_info
+from my_project.training import gnn_training, xgboost_training
+
+run_config = gnn_training.run_config
+run_fixed_folds_sweep = gnn_training.run_fixed_folds_sweep
+run_gnn_tuning = gnn_training.run_gnn_tuning
+binary_metrics = xgboost_training.binary_metrics
+run_xgboost_fixed_folds_study = xgboost_training.run_xgboost_fixed_folds_study
+tune_xgboost = xgboost_training.tune_xgboost
 
 
 def build_generator_name(generator_kind, *, generator_kwargs=None, f_function_id=None):
@@ -56,9 +56,10 @@ def run_sweep(
     edge_mode,
     threshold_grid,
     n_edges_grid,
-    model_classes,
-    conv_layer,
-    search_space,
+    model_configs=None,
+    model_classes=None,
+    conv_layer=None,
+    search_space=None,
     technical_settings,
     direction,
     n_trials,
@@ -177,6 +178,7 @@ def run_sweep(
                             experiment_name=experiment_name,
                             run_xgb=True,
                             run_mlp=True,
+                            model_configs=model_configs,
                             model_classes=model_classes,
                             conv_layer=conv_layer,
                             search_space=search_space,
@@ -232,6 +234,7 @@ def run_sweep(
                                 experiment_name=experiment_name,
                                 run_xgb=False,
                                 run_mlp=False,
+                                model_configs=model_configs,
                                 model_classes=model_classes,
                                 conv_layer=conv_layer,
                                 search_space=search_space,

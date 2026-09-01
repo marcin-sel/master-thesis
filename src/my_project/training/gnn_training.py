@@ -19,6 +19,47 @@ _extract_graph_permute_seed = training_helpers._extract_graph_permute_seed
 tune_xgboost = xgboost_training.tune_xgboost
 
 
+def _expand_model_configs(
+    model_configs=None, *, model_classes=None, conv_layer=None, search_space=None
+):
+    """Flatten model specs into one entry per (model_cls, conv_layer).
+
+    Accepts either explicit ``model_configs`` (each a dict with ``model_cls``,
+    ``search_space``, ``convs`` and optional ``suggest_params_func``) or the
+    legacy ``model_classes`` + shared ``conv_layer``/``search_space`` trio. Every
+    returned entry carries its own ``search_space``/``conv_layer`` so MLP and GNN
+    can be tuned on different grids in one loop.
+    """
+    if model_configs is not None:
+        expanded = []
+        for cfg in model_configs:
+            for conv in cfg.get("convs", [None]):
+                expanded.append(
+                    {
+                        "model_cls": cfg["model_cls"],
+                        "search_space": cfg["search_space"],
+                        "conv_layer": conv,
+                        "suggest_params_func": cfg.get(
+                            "suggest_params_func", suggest_from_search_space
+                        ),
+                    }
+                )
+        return expanded
+    if model_classes is None or search_space is None:
+        raise ValueError(
+            "Provide either model_configs or (model_classes and search_space)"
+        )
+    return [
+        {
+            "model_cls": model_cls,
+            "search_space": search_space,
+            "conv_layer": None if model_cls is MyMLP else conv_layer,
+            "suggest_params_func": suggest_from_search_space,
+        }
+        for model_cls in model_classes
+    ]
+
+
 def run_gnn_tuning(
     graph,
     graph_name,
@@ -250,9 +291,10 @@ def run_config(
     experiment_name,
     run_xgb,
     run_mlp,
-    model_classes,
-    conv_layer,
-    search_space,
+    model_configs=None,
+    model_classes=None,
+    conv_layer=None,
+    search_space=None,
     technical_settings,
     direction,
     n_trials,
@@ -268,7 +310,13 @@ def run_config(
     xgb_search_space=None,
     cv_splits=1,
 ):
-    """Train graph-dependent GNNs over `graphs`, plus optional graph-independent baselines."""
+    """Train graph-dependent GNNs over `graphs`, plus optional graph-independent baselines.
+
+    Models are given as ``model_configs`` (each ``{"model_cls", "search_space",
+    "convs", ["suggest_params_func"]}``) so MLP and GNN can use different grids;
+    the legacy ``model_classes`` + ``conv_layer``/``search_space`` trio is still
+    accepted as a fallback.
+    """
     X_train, X_valid, X_test, y_train, y_valid, y_test = splits
     X_all = pd.concat([X_train, X_valid, X_test])
     y_all = pd.concat([y_train, y_valid, y_test])
@@ -311,37 +359,17 @@ def run_config(
             )
         )
 
-    if run_mlp and MyMLP in model_classes:
-        empty_graph = nx.empty_graph(next(iter(graphs.values())))
-        results.append(
-            run_gnn_tuning(
-                graph=empty_graph,
-                graph_name="empty",
-                model_cls=MyMLP,
-                suggest_params_func=suggest_from_search_space,
-                X_all=X_all,
-                y_all=y_all,
-                folds=folds,
-                optuna_storage=optuna_storage,
-                standardize=standardize,
-                keep_on_gpu=keep_on_gpu,
-                n_startup_trials=n_startup_trials,
-                conv_layer=None,
-                search_space=search_space,
-                technical_settings=technical_settings,
-                direction=direction,
-                n_trials=n_trials,
-                sampler_seed=sampler_seed,
-                experiment_name=experiment_name,
-                extra_tags={**base_tags, "n_features": empty_graph.number_of_nodes()},
-                top_k=top_k,
-                main_data_seed=main_data_seed,
-                preprocessing_pipeline=preprocessing_pipeline,
-            )
-        )
+    expanded_configs = _expand_model_configs(
+        model_configs,
+        model_classes=model_classes,
+        conv_layer=conv_layer,
+        search_space=search_space,
+    )
+    mlp_configs = [c for c in expanded_configs if c["model_cls"] is MyMLP]
+    gnn_configs = [c for c in expanded_configs if c["model_cls"] is not MyMLP]
 
-    gnn_models = [m for m in model_classes if m is not MyMLP]
-    for model_cls in gnn_models:
+    for cfg in gnn_configs:
+        model_cls = cfg["model_cls"]
         for graph_name, graph_train in graphs.items():
             stats = edges_info.get(graph_name, {})
             graph_permute_seed = _extract_graph_permute_seed(graph_name)
@@ -361,7 +389,7 @@ def run_config(
                     graph=graph_train,
                     graph_name=graph_name,
                     model_cls=model_cls,
-                    suggest_params_func=suggest_from_search_space,
+                    suggest_params_func=cfg["suggest_params_func"],
                     X_all=X_all,
                     y_all=y_all,
                     folds=folds,
@@ -369,14 +397,48 @@ def run_config(
                     standardize=standardize,
                     keep_on_gpu=keep_on_gpu,
                     n_startup_trials=n_startup_trials,
-                    conv_layer=conv_layer,
-                    search_space=search_space,
+                    conv_layer=cfg["conv_layer"],
+                    search_space=cfg["search_space"],
                     technical_settings=technical_settings,
                     direction=direction,
                     n_trials=n_trials,
                     sampler_seed=sampler_seed,
                     experiment_name=experiment_name,
                     extra_tags=extra_tags,
+                    top_k=top_k,
+                    main_data_seed=main_data_seed,
+                    preprocessing_pipeline=preprocessing_pipeline,
+                )
+            )
+
+    # MLP last so the sweep ends with the graph-independent baseline.
+    if run_mlp and mlp_configs:
+        empty_graph = nx.empty_graph(next(iter(graphs.values())))
+        for cfg in mlp_configs:
+            results.append(
+                run_gnn_tuning(
+                    graph=empty_graph,
+                    graph_name="empty",
+                    model_cls=cfg["model_cls"],
+                    suggest_params_func=cfg["suggest_params_func"],
+                    X_all=X_all,
+                    y_all=y_all,
+                    folds=folds,
+                    optuna_storage=optuna_storage,
+                    standardize=standardize,
+                    keep_on_gpu=keep_on_gpu,
+                    n_startup_trials=n_startup_trials,
+                    conv_layer=cfg["conv_layer"],
+                    search_space=cfg["search_space"],
+                    technical_settings=technical_settings,
+                    direction=direction,
+                    n_trials=n_trials,
+                    sampler_seed=sampler_seed,
+                    experiment_name=experiment_name,
+                    extra_tags={
+                        **base_tags,
+                        "n_features": empty_graph.number_of_nodes(),
+                    },
                     top_k=top_k,
                     main_data_seed=main_data_seed,
                     preprocessing_pipeline=preprocessing_pipeline,
@@ -418,31 +480,12 @@ def run_fixed_folds_sweep(
     """Run tuning on a fixed set of precomputed folds and per-fold graphs."""
     results = []
 
-    if model_configs is not None:
-        expanded_configs = []
-        for cfg in model_configs:
-            convs = cfg.get("convs", [None])
-            for conv in convs:
-                expanded_configs.append(
-                    {
-                        "model_cls": cfg["model_cls"],
-                        "search_space": cfg["search_space"],
-                        "conv_layer": conv,
-                    }
-                )
-    else:
-        if model_classes is None or search_space is None:
-            raise ValueError(
-                "Provide either model_configs or (model_classes and search_space)"
-            )
-        expanded_configs = [
-            {
-                "model_cls": model_cls,
-                "search_space": search_space,
-                "conv_layer": None if model_cls is MyMLP else conv_layer,
-            }
-            for model_cls in model_classes
-        ]
+    expanded_configs = _expand_model_configs(
+        model_configs,
+        model_classes=model_classes,
+        conv_layer=conv_layer,
+        search_space=search_space,
+    )
 
     mlp_configs = [cfg for cfg in expanded_configs if cfg["model_cls"] is MyMLP]
     gnn_configs = [cfg for cfg in expanded_configs if cfg["model_cls"] is not MyMLP]
