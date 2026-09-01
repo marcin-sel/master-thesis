@@ -50,7 +50,7 @@ def _xgb_result_from_study(study, *, run_test=True):
 
 
 def binary_metrics(y_true, proba, *, prefix, threshold=0.5):
-    """Compute the same metric set the GNN logs, under the same names/prefix."""
+    """Compute binary classification metrics from positive-class probabilities."""
     pred = (proba >= threshold).astype(int)
     tn = int(((pred == 0) & (y_true == 0)).sum())
     fp = int(((pred == 1) & (y_true == 0)).sum())
@@ -386,8 +386,15 @@ def tune_xgboost(
     name_tags = extra_tags or {}
 
     def _study_name_for(data_seed):
+        # experiment_name namespaces the study (mirrors the GNN/MLP naming), so a
+        # changed experiment suffix forces a fresh XGBoost study instead of
+        # resuming a finished one. Drop the generator token when it just
+        # duplicates experiment_name (synthetic sweeps set them equal).
+        generator_name = name_tags.get("generator_name")
+        generator_token = generator_name if generator_name != experiment_name else None
         return _build_study_name(
-            name_tags.get("generator_name"),
+            experiment_name,
+            generator_token,
             f"cfg{name_tags['config_hash']}"
             if name_tags.get("config_hash") is not None
             else None,
@@ -433,8 +440,8 @@ def tune_xgboost(
 
         if enqueue_params is None:
             print(
-                f"[top-k] brak ukończonych triali w studium głównym "
-                f"{main_study_name!r}; pełny tuning XGBoost dla seed={data_seed}"
+                f"[top-k] no completed trials in the main study "
+                f"{main_study_name!r}; running full XGBoost tuning for seed={data_seed}"
             )
 
     study = _run_xgboost_folded_study(
