@@ -18,14 +18,7 @@ from my_project.graphs import (
     graph_stats,
 )
 from my_project.information_theory import compute_info
-from my_project.training import gnn_training, xgboost_training
-
-run_config = gnn_training.run_config
-run_fixed_folds_sweep = gnn_training.run_fixed_folds_sweep
-run_gnn_tuning = gnn_training.run_gnn_tuning
-binary_metrics = xgboost_training.binary_metrics
-run_xgboost_fixed_folds_study = xgboost_training.run_xgboost_fixed_folds_study
-tune_xgboost = xgboost_training.tune_xgboost
+from my_project.training.gnn_training import run_config
 
 
 def build_generator_name(generator_kind, *, generator_kwargs=None, f_function_id=None):
@@ -298,12 +291,6 @@ def run_sweep(
 
 
 __all__ = [
-    "binary_metrics",
     "build_generator_name",
-    "run_config",
-    "run_fixed_folds_sweep",
-    "run_gnn_tuning",
     "run_sweep",
-    "run_xgboost_fixed_folds_study",
-    "tune_xgboost",
 ]
