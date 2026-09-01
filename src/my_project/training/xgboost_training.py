@@ -11,6 +11,7 @@ from sklearn import config_context
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
+    balanced_accuracy_score,
     f1_score,
     precision_score,
     recall_score,
@@ -55,6 +56,7 @@ def binary_metrics(y_true, proba, *, prefix, threshold=0.5):
     specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
     return {
         f"{prefix}/accuracy": accuracy_score(y_true, pred),
+        f"{prefix}/balanced_accuracy": balanced_accuracy_score(y_true, pred),
         f"{prefix}/auc": roc_auc_score(y_true, proba),
         f"{prefix}/avg_precision": average_precision_score(y_true, proba),
         f"{prefix}/f1": f1_score(y_true, pred, zero_division=0),
@@ -105,6 +107,7 @@ def _run_xgboost_folded_study(
     mlflow_tracking_uri=None,
     enqueue_params=None,
     run_test=True,
+    monitor_metric="val/auc",
 ):
     """Shared Optuna+MLflow runner for XGBoost over predefined folds."""
     loggable_tags = {k: v for k, v in run_tags.items() if v is not None}
@@ -219,7 +222,12 @@ def _run_xgboost_folded_study(
                     mlflow.log_metrics(train_m)
 
                 fold_run_ids.append(fold_run.info.run_id)
-                fold_val_scores.append(val_m["val/auc"])
+                if monitor_metric not in val_m:
+                    raise ValueError(
+                        f"Unsupported XGBoost monitor_metric={monitor_metric!r}; "
+                        f"available validation metrics={sorted(val_m)}"
+                    )
+                fold_val_scores.append(val_m[monitor_metric])
                 fold_val_metrics.append(val_m)
                 fold_test_metrics.append(test_m)
                 fold_train_metrics.append(train_m)
@@ -447,6 +455,7 @@ def run_xgboost_fixed_folds_study(
     xgb_search_space=None,
     return_study=False,
     run_test=True,
+    monitor_metric="val/auc",
 ):
     """Run XGBoost baseline on predefined folds with MLflow logging."""
 
@@ -458,6 +467,7 @@ def run_xgboost_fixed_folds_study(
         "graph_name": graph_name,
         "model_cls": "XGBoost",
         "run_group": run_group,
+        "monitor_metric": monitor_metric,
         "n_trials": n_trials,
         "search_strategy": "tpe",
         "experiment_name": experiment_name,
@@ -465,9 +475,13 @@ def run_xgboost_fixed_folds_study(
     }
 
     def suggest_xgb_params(trial):
+        eval_metrics = ["auc", "logloss", "error", "aucpr"]
+        if monitor_metric == "val/auc":
+            eval_metrics = ["aucpr", "logloss", "error", "auc"]
         base_params = {
             "objective": "binary:logistic",
-            "eval_metric": ["aucpr", "logloss", "error", "auc"],
+            # XGBoost early stopping monitors the final metric in this list.
+            "eval_metric": eval_metrics,
             "tree_method": "hist",
             "random_state": seed,
             "n_jobs": -1,
@@ -505,6 +519,7 @@ def run_xgboost_fixed_folds_study(
         preprocessing_pipeline=xgb_preprocessing_pipeline,
         mlflow_tracking_uri=mlflow_tracking_uri,
         run_test=run_test,
+        monitor_metric=monitor_metric,
     )
     if return_study:
         return study
