@@ -3,6 +3,8 @@ import pandas as pd
 from scipy.special import expit
 from scipy.stats import zscore
 
+from my_project.data.interactions import lookup_interaction_moment
+
 INTERACTION_DICTS = {
     1: {
         ("x1", "x2"): lambda a, b: np.log(np.abs(a)) * b,
@@ -308,6 +310,14 @@ def generate_pairwise_interaction_data(
     if n_informative < 1:
         raise ValueError("n_informative must be at least 1.")
 
+    # Keep the scalar equicorrelation ``rho`` to look up fixed interaction
+    # moments; ``cov`` is overwritten with the full matrix just below.
+    cov_scalar = (
+        float(cov)
+        if isinstance(cov, (int, float)) and not isinstance(cov, bool)
+        else None
+    )
+
     interaction_dict = _resolve_interactions(interactions)
 
     names = [f"x{i}" for i in range(1, n_informative + 1)]
@@ -351,11 +361,23 @@ def generate_pairwise_interaction_data(
             index=X_inf.index,
         )
         if interaction_dict:
-            X_int = pd.DataFrame(
-                zscore(X_int.to_numpy(), axis=0, ddof=0),
-                columns=X_int.columns,
-                index=X_int.index,
-            )
+            # Standardize each interaction column by its simulated population
+            # moment for this ``rho`` when available, else fall back to the
+            # empirical per-draw z-score.
+            col_funcs = {
+                "_".join(feature_names): func
+                for feature_names, func in interaction_dict.items()
+            }
+            std_cols = {}
+            for col in X_int.columns:
+                values = X_int[col].to_numpy().astype(float)
+                moment = lookup_interaction_moment(col_funcs.get(col), cov_scalar)
+                if moment is not None:
+                    mean, std = moment
+                    std_cols[col] = (values - mean) / std
+                else:
+                    std_cols[col] = zscore(values, ddof=0)
+            X_int = pd.DataFrame(std_cols, index=X_int.index)
 
     w_inf = rng.normal(coef_loc, coef_scale, size=n_informative)
     if not main_effects:
