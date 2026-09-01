@@ -238,6 +238,7 @@ def load_higgs_data(
     timeout: tuple[float, float] = (30.0, 600.0),
     cache_dir: str | Path = DEFAULT_CACHE_DIR,
     force_download: bool = False,
+    exclude_indexes: list[int] | None = None,
 ) -> dict[str, pd.DataFrame | pd.Series | list[str]]:
     """Load a prefix of the UCI HIGGS dataset.
 
@@ -290,6 +291,10 @@ def load_higgs_data(
     force_download:
         If ``True``, re-download and refresh the cache even when a suitable
         cached prefix exists.
+    exclude_indexes:
+        Pool-row indexes to exclude before random sampling. This supports
+        disjoint draws from the same cached pool. Ignored when ``random_state``
+        is ``None``.
 
     Returns
     -------
@@ -333,16 +338,21 @@ def load_higgs_data(
         data.to_parquet(_cache_path(cache_dir, read_rows), index=False)
 
     if random_state is not None:
+        data = data[~data.index.isin(exclude_indexes or [])]
+        if len(data) < n_rows:
+            raise ValueError(
+                f"Cannot sample {n_rows} rows after exclusions; "
+                f"only {len(data)} rows remain in the pool."
+            )
         data = data.sample(n=n_rows, random_state=random_state)
 
-    data = data.reset_index(drop=True)
     # Relabel to the canonical (label + physicists' feature) names by position.
     # The download path already reads with these names; doing it here as well
     # upgrades any legacy cache written with the old x1..x28 identifiers.
     data.columns = _COLUMN_NAMES
 
     X = data[feature_names].copy()
-    y = pd.Series(data["y"].to_numpy(), name="y")
+    y = pd.Series(data["y"].to_numpy(), name="y", index=data.index, dtype=np.int8)
 
     return {
         "X": X,
@@ -360,6 +370,7 @@ def generate_higgs_data(
     pool_rows: int | None = None,
     cache_dir: str | Path = DEFAULT_CACHE_DIR,
     force_download: bool = False,
+    exclude_indexes: list[int] | None = None,
     **_ignored,
 ) -> dict[str, pd.DataFrame | pd.Series | list]:
     """Load HIGGS behind the synthetic-generator interface.
@@ -378,6 +389,9 @@ def generate_higgs_data(
       subsets. The pool is streamed and cached only once. When ``None``, the
       leading ``n_samples`` rows are returned (deterministic prefix).
     - ``pool_rows``: size of that sampling pool; see :func:`load_higgs_data`.
+    - ``exclude_indexes``: pool-position labels (e.g. the index of a previously
+      drawn test set) to keep out of this draw, so successive draws can be made
+      disjoint (e.g. train/valid off the held-out test rows).
     - ``feature_set``: which features to return (``"low_level"`` default,
       ``"high_level"`` or ``"all"``); see :func:`load_higgs_data`.
     - any other keyword (``cov``, ``n_informative``, ``interactions``, ...) is
@@ -403,6 +417,7 @@ def generate_higgs_data(
         feature_set=feature_set,
         random_state=random_state,
         pool_rows=pool_rows,
+        exclude_indexes=exclude_indexes,
         cache_dir=cache_dir,
         force_download=force_download,
     )
