@@ -204,27 +204,14 @@ def run_gnn_tuning(
     pruner = optuna.pruners.PercentilePruner(
         percentile=50, n_startup_trials=n_startup_trials, n_warmup_steps=n_warmup_steps
     )
-    if top_k is not None and main_data_seed is not None and data_seed != main_data_seed:
-        source_name = _study_name_for(main_data_seed)
-        enqueue_params = _top_params_from(source_name, top_k)
-        if enqueue_params is not None:
-            pruner = optuna.pruners.NopPruner()
-        else:
-            print(
-                f"[top-k] brak ukończonych triali w studium głównym "
-                f"{source_name!r}; pełny tuning dla seed={data_seed}"
-            )
-
     # Permuted graphs reuse the best hyperparameters from their source
-    # (non-permuted) graph study instead of a fresh search: enqueue the source's
-    # top-k combos and skip pruning. Requires the source study to have finished
+    # (non-permuted / "real") graph study instead of a fresh search: enqueue the
+    # source's top-k combos and skip pruning. This takes precedence over the
+    # cross-seed ``top_k`` reuse so permuted graphs always source from the real
+    # graph at the same data_seed. Requires the source study to have finished
     # first (guaranteed by the graph ordering in the sweep).
     permute_seed = _extract_graph_permute_seed(graph_name)
-    if (
-        permuted_top_k is not None
-        and permute_seed is not None
-        and enqueue_params is None
-    ):
+    if permuted_top_k is not None and permute_seed is not None:
         source_graph = graph_name[: graph_name.rfind("_permuted_")]
         source_name = _study_name_for(data_seed, graph=source_graph)
         enqueue_params = _top_params_from(source_name, permuted_top_k)
@@ -232,8 +219,24 @@ def run_gnn_tuning(
             pruner = optuna.pruners.NopPruner()
         else:
             print(
-                f"[permuted top-k] brak ukończonych triali w studium źródłowym "
-                f"{source_name!r}; pełny tuning dla {graph_name}"
+                f"[permuted top-k] no completed trials in the source study "
+                f"{source_name!r}; running full tuning for {graph_name}"
+            )
+
+    if (
+        enqueue_params is None
+        and top_k is not None
+        and main_data_seed is not None
+        and data_seed != main_data_seed
+    ):
+        source_name = _study_name_for(main_data_seed)
+        enqueue_params = _top_params_from(source_name, top_k)
+        if enqueue_params is not None:
+            pruner = optuna.pruners.NopPruner()
+        else:
+            print(
+                f"[top-k] no completed trials in the main study "
+                f"{source_name!r}; running full tuning for seed={data_seed}"
             )
 
     ts = copy.deepcopy(technical_settings)
@@ -306,6 +309,7 @@ def run_config(
     n_startup_trials=10,
     top_k=None,
     main_data_seed=None,
+    permuted_top_k=None,
     preprocessing_pipeline=None,
     xgb_search_space=None,
     cv_splits=1,
@@ -407,6 +411,7 @@ def run_config(
                     extra_tags=extra_tags,
                     top_k=top_k,
                     main_data_seed=main_data_seed,
+                    permuted_top_k=permuted_top_k,
                     preprocessing_pipeline=preprocessing_pipeline,
                 )
             )

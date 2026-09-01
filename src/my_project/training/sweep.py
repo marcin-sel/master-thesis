@@ -82,6 +82,7 @@ def run_sweep(
     xgb_search_space=None,
     cv_splits=1,
     test_seed=99991,
+    permuted_top_k=None,
 ):
     """Full grid sweep over (noise, cov, train_size, data_seed).
 
@@ -193,6 +194,7 @@ def run_sweep(
                             n_startup_trials=n_startup_trials,
                             top_k=top_k,
                             main_data_seed=main_data_seed,
+                            permuted_top_k=permuted_top_k,
                             preprocessing_pipeline=preprocessing_pipeline,
                             xgb_search_space=xgb_search_space,
                             cv_splits=cv_splits,
@@ -249,6 +251,7 @@ def run_sweep(
                                 n_startup_trials=n_startup_trials,
                                 top_k=top_k,
                                 main_data_seed=main_data_seed,
+                                permuted_top_k=permuted_top_k,
                                 preprocessing_pipeline=preprocessing_pipeline,
                                 cv_splits=cv_splits,
                             )
