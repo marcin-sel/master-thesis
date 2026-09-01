@@ -1,5 +1,6 @@
 """XGBoost baseline tuning helpers used by sweep orchestration."""
 
+import contextlib
 import copy
 import os
 
@@ -11,6 +12,7 @@ from sklearn import config_context
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
+    balanced_accuracy_score,
     f1_score,
     precision_score,
     recall_score,
@@ -24,24 +26,38 @@ from .training_helpers import _build_study_name, resolve_artifact_location
 from .tuning import suggest_from_search_space
 
 
-def _xgb_result_from_study(study):
+def _xgb_result_from_study(study, *, run_test=True):
     """Standardized XGBoost result payload used by sweep aggregations."""
+    metric_attr = "test_metrics" if run_test else "mean_metrics"
+    metrics = study.best_trial.user_attrs.get(metric_attr, {})
+    if not run_test:
+        metrics = {
+            name: value
+            for name, value in metrics.items()
+            if not name.startswith(("test/", "mean_test/", "std_test/"))
+        }
     return {
         "graph_name": "xgboost_full",
         "model_cls": "XGBoost",
+        "study_name": study.study_name,
         "best_value": study.best_value,
-        **study.best_trial.user_attrs.get("test_metrics", {}),
+        "best_params": study.best_trial.user_attrs.get(
+            "params", dict(study.best_trial.params)
+        ),
+        "best_n_estimators": study.best_trial.user_attrs.get("best_n_estimators"),
+        **metrics,
     }
 
 
 def binary_metrics(y_true, proba, *, prefix, threshold=0.5):
-    """Compute the same metric set the GNN logs, under the same names/prefix."""
+    """Compute binary classification metrics from positive-class probabilities."""
     pred = (proba >= threshold).astype(int)
     tn = int(((pred == 0) & (y_true == 0)).sum())
     fp = int(((pred == 1) & (y_true == 0)).sum())
     specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
     return {
         f"{prefix}/accuracy": accuracy_score(y_true, pred),
+        f"{prefix}/balanced_accuracy": balanced_accuracy_score(y_true, pred),
         f"{prefix}/auc": roc_auc_score(y_true, proba),
         f"{prefix}/avg_precision": average_precision_score(y_true, proba),
         f"{prefix}/f1": f1_score(y_true, pred, zero_division=0),
@@ -91,6 +107,8 @@ def _run_xgboost_folded_study(
     preprocessing_pipeline=None,
     mlflow_tracking_uri=None,
     enqueue_params=None,
+    run_test=True,
+    monitor_metric="val/auc",
 ):
     """Shared Optuna+MLflow runner for XGBoost over predefined folds."""
     loggable_tags = {k: v for k, v in run_tags.items() if v is not None}
@@ -109,6 +127,7 @@ def _run_xgboost_folded_study(
 
     def objective(trial):
         params = suggest_params_func(trial)
+        trial.set_user_attr("params", params)
         graph_name = run_tags.get("graph_name", "xgboost_full")
         parent_run_name = f"XGBoost__{graph_name}__trial_{trial.number}"
 
@@ -119,28 +138,47 @@ def _run_xgboost_folded_study(
         fold_run_ids = []
         fold_best_ns = []
 
-        with mlflow.start_run(run_name=parent_run_name) as parent_run:
-            parent_run_id = parent_run.info.run_id
-            mlflow.set_tags(
-                {**run_tags, "run_type": "parent", "trial_id": trial.number}
-            )
-            mlflow.log_params(loggable_tags)
-            mlflow.log_param("parent_run_name", parent_run_name)
-            mlflow.log_params(params)
+        # With a single fold there is nothing to aggregate, so skip the extra
+        # MLflow parent run and log everything into one run (mirrors the GNN path).
+        single_fold = len(folds) == 1
+        parent_ctx = (
+            contextlib.nullcontext()
+            if single_fold
+            else mlflow.start_run(run_name=parent_run_name)
+        )
+
+        with parent_ctx as parent_run:
+            if single_fold:
+                parent_run_id = None
+            else:
+                parent_run_id = parent_run.info.run_id
+                mlflow.set_tags(
+                    {**run_tags, "run_type": "parent", "trial_id": trial.number}
+                )
+                mlflow.log_params(loggable_tags)
+                mlflow.log_param("parent_run_name", parent_run_name)
+                mlflow.log_params(params)
 
             for fold_idx, fold in enumerate(folds):
                 X_tr, y_tr = X.loc[fold["train"]], y.loc[fold["train"]].astype(int)
                 X_va, y_va = X.loc[fold["valid"]], y.loc[fold["valid"]].astype(int)
-                X_te, y_te = X.loc[fold["test"]], y.loc[fold["test"]].astype(int)
+                if run_test:
+                    X_te = X.loc[fold["test"]]
+                    y_te = y.loc[fold["test"]].astype(int)
 
                 if preprocessing_pipeline is not None:
                     pre = copy.deepcopy(preprocessing_pipeline)
                     with config_context(transform_output="pandas"):
                         X_tr = pre.fit_transform(X_tr, y_tr)
                         X_va = pre.transform(X_va)
-                        X_te = pre.transform(X_te)
+                        if run_test:
+                            X_te = pre.transform(X_te)
 
-                X_tr, (X_va, X_te) = _align_xgb_categoricals(X_tr, [X_va, X_te])
+                X_others = [X_va, X_te] if run_test else [X_va]
+                X_tr, aligned_others = _align_xgb_categoricals(X_tr, X_others)
+                X_va = aligned_others[0]
+                if run_test:
+                    X_te = aligned_others[1]
 
                 scale_pos_weight = (y_tr == 0).sum() / max((y_tr == 1).sum(), 1)
                 model = XGBClassifier(
@@ -161,16 +199,27 @@ def _run_xgboost_folded_study(
                 val_m = binary_metrics(
                     y_va.to_numpy(), model.predict_proba(X_va)[:, 1], prefix="val"
                 )
-                test_m = binary_metrics(
-                    y_te.to_numpy(), model.predict_proba(X_te)[:, 1], prefix="test"
+                test_m = (
+                    binary_metrics(
+                        y_te.to_numpy(),
+                        model.predict_proba(X_te)[:, 1],
+                        prefix="test",
+                    )
+                    if run_test
+                    else {}
                 )
                 train_m = binary_metrics(
                     y_tr.to_numpy(), model.predict_proba(X_tr)[:, 1], prefix="train"
                 )
 
+                fold_run_name = (
+                    parent_run_name
+                    if single_fold
+                    else f"{parent_run_name}__fold_{fold_idx}"
+                )
                 with mlflow.start_run(
-                    run_name=f"{parent_run_name}__fold_{fold_idx}",
-                    nested=True,
+                    run_name=fold_run_name,
+                    nested=not single_fold,
                 ) as fold_run:
                     mlflow.set_tags(
                         {
@@ -186,11 +235,17 @@ def _run_xgboost_folded_study(
                     mlflow.log_param("scale_pos_weight", float(scale_pos_weight))
                     mlflow.log_param("best_n_estimators", best_n)
                     mlflow.log_metrics(val_m)
-                    mlflow.log_metrics(test_m)
+                    if run_test:
+                        mlflow.log_metrics(test_m)
                     mlflow.log_metrics(train_m)
 
                 fold_run_ids.append(fold_run.info.run_id)
-                fold_val_scores.append(val_m["val/auc"])
+                if monitor_metric not in val_m:
+                    raise ValueError(
+                        f"Unsupported XGBoost monitor_metric={monitor_metric!r}; "
+                        f"available validation metrics={sorted(val_m)}"
+                    )
+                fold_val_scores.append(val_m[monitor_metric])
                 fold_val_metrics.append(val_m)
                 fold_test_metrics.append(test_m)
                 fold_train_metrics.append(train_m)
@@ -217,6 +272,8 @@ def _run_xgboost_folded_study(
                 metric_mean = float(np.mean(values))
                 metric_std = float(np.std(values))
                 mean_metrics[name] = metric_mean
+                if single_fold:
+                    continue
                 mlflow_client.log_metric(parent_run_id, name, metric_mean)
                 for rid in [parent_run_id, *fold_run_ids]:
                     mlflow_client.log_metric(rid, f"mean_{name}", metric_mean)
@@ -224,22 +281,27 @@ def _run_xgboost_folded_study(
 
             best_n_mean = float(np.mean(fold_best_ns))
             best_n_std = float(np.std(fold_best_ns))
-            mlflow_client.log_metric(
-                parent_run_id, "mean_best_n_estimators", best_n_mean
-            )
-            for rid in [parent_run_id, *fold_run_ids]:
-                mlflow_client.log_metric(rid, "mean_best_n_estimators", best_n_mean)
-                mlflow_client.log_metric(rid, "std_best_n_estimators", best_n_std)
+            if not single_fold:
+                mlflow_client.log_metric(
+                    parent_run_id, "mean_best_n_estimators", best_n_mean
+                )
+                for rid in [parent_run_id, *fold_run_ids]:
+                    mlflow_client.log_metric(rid, "mean_best_n_estimators", best_n_mean)
+                    mlflow_client.log_metric(rid, "std_best_n_estimators", best_n_std)
 
         trial.set_user_attr("mean_metrics", mean_metrics)
         trial.set_user_attr("model_cls", "XGBoost")
-        if len(fold_test_metrics) == 1:
-            trial.set_user_attr("test_metrics", fold_test_metrics[0])
-        else:
-            trial.set_user_attr(
-                "test_metrics",
-                {k: v for k, v in mean_metrics.items() if k.startswith("test/")},
-            )
+        trial.set_user_attr(
+            "best_n_estimators", int(round(float(np.median(fold_best_ns))))
+        )
+        if run_test:
+            if len(fold_test_metrics) == 1:
+                trial.set_user_attr("test_metrics", fold_test_metrics[0])
+            else:
+                trial.set_user_attr(
+                    "test_metrics",
+                    {k: v for k, v in mean_metrics.items() if k.startswith("test/")},
+                )
         return float(np.mean(fold_val_scores))
 
     sampler = optuna.samplers.TPESampler(
@@ -324,8 +386,15 @@ def tune_xgboost(
     name_tags = extra_tags or {}
 
     def _study_name_for(data_seed):
+        # experiment_name namespaces the study (mirrors the GNN/MLP naming), so a
+        # changed experiment suffix forces a fresh XGBoost study instead of
+        # resuming a finished one. Drop the generator token when it just
+        # duplicates experiment_name (synthetic sweeps set them equal).
+        generator_name = name_tags.get("generator_name")
+        generator_token = generator_name if generator_name != experiment_name else None
         return _build_study_name(
-            name_tags.get("generator_name"),
+            experiment_name,
+            generator_token,
             f"cfg{name_tags['config_hash']}"
             if name_tags.get("config_hash") is not None
             else None,
@@ -371,8 +440,8 @@ def tune_xgboost(
 
         if enqueue_params is None:
             print(
-                f"[top-k] brak ukończonych triali w studium głównym "
-                f"{main_study_name!r}; pełny tuning XGBoost dla seed={data_seed}"
+                f"[top-k] no completed trials in the main study "
+                f"{main_study_name!r}; running full XGBoost tuning for seed={data_seed}"
             )
 
     study = _run_xgboost_folded_study(
@@ -413,6 +482,8 @@ def run_xgboost_fixed_folds_study(
     xgb_preprocessing_pipeline=None,
     xgb_search_space=None,
     return_study=False,
+    run_test=True,
+    monitor_metric="val/auc",
 ):
     """Run XGBoost baseline on predefined folds with MLflow logging."""
 
@@ -424,6 +495,7 @@ def run_xgboost_fixed_folds_study(
         "graph_name": graph_name,
         "model_cls": "XGBoost",
         "run_group": run_group,
+        "monitor_metric": monitor_metric,
         "n_trials": n_trials,
         "search_strategy": "tpe",
         "experiment_name": experiment_name,
@@ -431,9 +503,13 @@ def run_xgboost_fixed_folds_study(
     }
 
     def suggest_xgb_params(trial):
+        eval_metrics = ["auc", "logloss", "error", "aucpr"]
+        if monitor_metric == "val/auc":
+            eval_metrics = ["aucpr", "logloss", "error", "auc"]
         base_params = {
             "objective": "binary:logistic",
-            "eval_metric": ["aucpr", "logloss", "error", "auc"],
+            # XGBoost early stopping monitors the final metric in this list.
+            "eval_metric": eval_metrics,
             "tree_method": "hist",
             "random_state": seed,
             "n_jobs": -1,
@@ -470,10 +546,12 @@ def run_xgboost_fixed_folds_study(
         xgb_early_stopping_rounds=xgb_early_stopping_rounds,
         preprocessing_pipeline=xgb_preprocessing_pipeline,
         mlflow_tracking_uri=mlflow_tracking_uri,
+        run_test=run_test,
+        monitor_metric=monitor_metric,
     )
     if return_study:
         return study
-    return _xgb_result_from_study(study)
+    return _xgb_result_from_study(study, run_test=run_test)
 
 
 __all__ = [

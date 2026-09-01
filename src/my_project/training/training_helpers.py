@@ -2,6 +2,26 @@
 
 import os
 import re
+import tempfile
+
+
+def resolve_checkpoint_root(tracking_uri):
+    """Persistent root for Lightning checkpoints, never the process CWD.
+
+    ``ModelCheckpoint(dirpath=None)`` otherwise falls back to
+    ``trainer.default_root_dir`` (the CWD, e.g. a notebook dir) combined with the
+    MLflow logger's ``name``/``version``, littering ``<cwd>/<exp_id>/<run_id>/``
+    checkpoint trees. Anchor them beside the sqlite backend (or in the system
+    temp dir for other backends) so the CWD stays clean.
+    """
+    if tracking_uri and tracking_uri.startswith("sqlite:"):
+        db_path = tracking_uri.split("sqlite://", 1)[-1].lstrip("/")
+        db_path = "/" + db_path
+        root = os.path.join(os.path.dirname(db_path), "lightning_checkpoints")
+    else:
+        root = os.path.join(tempfile.gettempdir(), "my_project_lightning_checkpoints")
+    os.makedirs(root, exist_ok=True)
+    return root
 
 
 def resolve_artifact_location(tracking_uri):

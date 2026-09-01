@@ -40,7 +40,13 @@ def _as_hidden_dims(hidden_dim, n_layers=None):
 
 class NumericEncoder(nn.Module):
     def __init__(
-        self, input_dim=1, hidden_dims=None, dropout=None, batch_norm=True, output_dim=8
+        self,
+        input_dim=1,
+        hidden_dims=None,
+        hidden_dim_ratio=None,
+        dropout=None,
+        batch_norm=True,
+        output_dim=8,
     ):
         super().__init__()
         dims = [input_dim]
@@ -49,6 +55,8 @@ class NumericEncoder(nn.Module):
             if isinstance(hidden_dims, int):
                 hidden_dims = [hidden_dims]
             dims = dims + hidden_dims
+        elif hidden_dim_ratio is not None:
+            dims = dims + [int(output_dim * hidden_dim_ratio)]
         dims = dims + [output_dim]
 
         self.mlp = MLP(dims, dropout=dropout, activation="relu", batch_norm=batch_norm)
@@ -62,11 +70,12 @@ class EncodeX(nn.Module):
         self,
         n_nodes,
         emb_dim=8,
-        num_emb_hidden=None,
+        emb_num_hidden=None,
+        emb_num_hidden_ratio=None,
         numeric_features_indexes=None,
         categorical_features_index_n_classes_map=None,
-        num_dropout=None,
-        num_batch_norm=True,
+        emb_num_dropout=None,
+        emb_num_batch_norm=True,
         post_activation: Literal[None, "relu"] = None,
         post_batch_norm=False,
     ):
@@ -75,6 +84,7 @@ class EncodeX(nn.Module):
         if post_activation not in (None, "relu"):
             raise ValueError(f"Unsupported post_activation: {post_activation}")
         self.post_activation = post_activation
+        self.post_batch_norm = post_batch_norm
 
         # emb_dim=None -> passthrough: forward the raw column-0 value per node
         # (effective output dim is 1), skipping all learned embeddings.
@@ -101,6 +111,12 @@ class EncodeX(nn.Module):
             idx: i for i, idx in enumerate(self.numeric_features_indexes)
         }
 
+        self.post_bn = (
+            nn.BatchNorm1d(self.emb_dim)
+            if post_batch_norm and not self.passthrough
+            else None
+        )
+
         if self.passthrough:
             self.value_embeddings = nn.ModuleDict()
             self.num_embeddings = nn.ModuleDict()
@@ -119,19 +135,15 @@ class EncodeX(nn.Module):
             {
                 str(idx): NumericEncoder(
                     input_dim=1,
-                    hidden_dims=num_emb_hidden,
-                    dropout=num_dropout,
-                    batch_norm=num_batch_norm,
+                    hidden_dims=emb_num_hidden,
+                    hidden_dim_ratio=emb_num_hidden_ratio,
+                    dropout=emb_num_dropout,
+                    batch_norm=emb_num_batch_norm,
                     output_dim=emb_dim,
                 )
                 for idx in self.numeric_features_indexes
             }
         )
-
-        if post_activation not in (None, "relu"):
-            raise ValueError(f"Unsupported post_activation: {post_activation}")
-        self.post_batch_norm = post_batch_norm
-        self.post_activation = post_activation
 
     def forward(self, x):
         x_raw = x
@@ -172,9 +184,9 @@ class EncodeX(nn.Module):
 
         if self.post_activation == "relu":
             x_2d = torch.relu(x_2d)
-        if self.post_batch_norm:
+        if self.post_bn is not None:
             b, n, d = x_2d.shape
-            x_2d = nn.BatchNorm1d(d)(x_2d.reshape(b * n, d)).reshape(b, n, d)
+            x_2d = self.post_bn(x_2d.reshape(b * n, d)).reshape(b, n, d)
         return x_2d.reshape(batch_size * self.n_nodes, self.emb_dim)
 
 
@@ -199,11 +211,12 @@ class EncodeXVectorized(nn.Module):
         self,
         n_nodes,
         emb_dim=8,
-        num_emb_hidden=None,
+        emb_num_hidden=None,
+        emb_num_hidden_ratio=None,
         numeric_features_indexes=None,
         categorical_features_index_n_classes_map=None,
-        num_dropout=None,
-        num_batch_norm=True,
+        emb_num_dropout=None,
+        emb_num_batch_norm=True,
         post_activation: Literal[None, "relu"] = None,
         post_batch_norm=False,
     ):
@@ -230,6 +243,12 @@ class EncodeXVectorized(nn.Module):
             self.numeric_features_indexes = list(
                 set(range(n_nodes)) - set(self.categorical_features_indexes)
             )
+
+        self.post_bn = (
+            nn.BatchNorm1d(self.emb_dim)
+            if post_batch_norm and not self.passthrough
+            else None
+        )
 
         if self.passthrough:
             if self.categorical_features_indexes:
@@ -265,15 +284,20 @@ class EncodeXVectorized(nn.Module):
 
         # --- Numeric: grouped per-feature MLP (Linear(1 -> emb) by default). --
         self.has_numeric = len(self.numeric_features_indexes) > 0
-        self.num_dropout_p = num_dropout
+        self.num_dropout_p = emb_num_dropout
         if self.has_numeric:
             n_num = len(self.numeric_features_indexes)
-            if num_emb_hidden is None:
-                hidden = []
-            elif isinstance(num_emb_hidden, int):
-                hidden = [num_emb_hidden]
+            # hidden_dims (explicit) take precedence over hidden_dim_ratio
+            # (single layer sized as int(emb_dim * ratio)), mirroring NumericEncoder.
+            if emb_num_hidden is not None:
+                if isinstance(emb_num_hidden, int):
+                    hidden = [emb_num_hidden]
+                else:
+                    hidden = list(emb_num_hidden)
+            elif emb_num_hidden_ratio is not None:
+                hidden = [int(emb_dim * emb_num_hidden_ratio)]
             else:
-                hidden = list(num_emb_hidden)
+                hidden = []
             dims = [1] + hidden + [emb_dim]
 
             self.num_weights = nn.ParameterList()
@@ -292,13 +316,13 @@ class EncodeXVectorized(nn.Module):
                 # BatchNorm / activation / dropout only between hidden layers,
                 # never after the final projection (mirrors NumericEncoder/MLP).
                 is_hidden = i < len(dims) - 2
-                if is_hidden and num_batch_norm:
+                if is_hidden and emb_num_batch_norm:
                     self.num_norms.append(nn.BatchNorm1d(n_num * out_d))
                 else:
                     self.num_norms.append(nn.Identity())
 
             self.num_dropout = (
-                nn.Dropout(num_dropout) if num_dropout is not None else None
+                nn.Dropout(emb_num_dropout) if emb_num_dropout is not None else None
             )
             self.register_buffer(
                 "num_cols",
@@ -362,9 +386,9 @@ class EncodeXVectorized(nn.Module):
 
         if self.post_activation == "relu":
             out = torch.relu(out)
-        if self.post_batch_norm:
+        if self.post_bn is not None:
             b, n, d = out.shape
-            out = nn.BatchNorm1d(d)(out.reshape(b * n, d)).reshape(b, n, d)
+            out = self.post_bn(out.reshape(b * n, d)).reshape(b, n, d)
 
         return out.reshape(batch_size * self.n_nodes, self.emb_dim)
 
@@ -528,23 +552,32 @@ class MyGNN(nn.Module):
         n_nodes,
         n_classes=2,
         emb_dim=8,
+        emb_num_hidden=None,
+        emb_num_hidden_ratio=None,
+        emb_num_batch_norm=True,
+        encoder_post_activation: Literal[None, "relu"] = None,
+        encoder_post_norm: Literal[None, "batchnorm"] = None,
         hidden_dim=8,
         n_layers=1,
         mlp_hidden_dim=None,
         n_mlp_layers=1,
         dropout=0.3,
         numeric_features_indexes=None,
-        categorical_features_index_n_classes_map=dict(),
-        num_emb_hidden=None,
+        categorical_features_index_n_classes_map=None,
         add_skip=False,
         batch_norm=True,
         heads=None,
         conv_layer: Literal["GraphConv", "SAGEConv", "GATConv"] = "GraphConv",
         pooling_type: Literal["mean", "max", "concat"] = "mean",
         vectorized_encoder=True,
-        encoder_post_activation: Literal[None, "relu"] = None,
     ):
         super().__init__()
+
+        if categorical_features_index_n_classes_map is None:
+            categorical_features_index_n_classes_map = {}
+
+        if encoder_post_norm not in (None, "batchnorm"):
+            raise ValueError(f"Unsupported encoder_post_norm: {encoder_post_norm}")
 
         hidden_dim = _as_hidden_dims(hidden_dim, n_layers)
 
@@ -563,8 +596,11 @@ class MyGNN(nn.Module):
             emb_dim=emb_dim,
             numeric_features_indexes=numeric_features_indexes,
             categorical_features_index_n_classes_map=categorical_features_index_n_classes_map,
-            num_emb_hidden=num_emb_hidden,
+            emb_num_hidden=emb_num_hidden,
+            emb_num_hidden_ratio=emb_num_hidden_ratio,
             post_activation=encoder_post_activation,
+            post_batch_norm=encoder_post_norm == "batchnorm",
+            emb_num_batch_norm=emb_num_batch_norm,
         )
 
         self.GNN = GNN(
@@ -643,20 +679,27 @@ class MyMLP(nn.Module):
         self,
         n_nodes,
         n_classes=2,
-        hidden_dim=16,
+        emb_dim=8,
+        emb_num_hidden=None,
+        emb_num_hidden_ratio=None,
+        emb_num_batch_norm=True,
+        encoder_post_activation: Literal[None, "relu"] = None,
+        encoder_post_norm: Literal[None, "batchnorm"] = None,
+        hidden_dim=8,
         n_layers=1,
-        emb_dim=None,
         dropout=0.3,
         numeric_features_indexes=None,
         categorical_features_index_n_classes_map=None,
-        num_emb_hidden=None,
+        batch_norm=True,
         vectorized_encoder=True,
-        encoder_post_activation: Literal[None, "relu"] = None,
     ):
         super().__init__()
 
         if categorical_features_index_n_classes_map is None:
-            categorical_features_index_n_classes_map = dict()
+            categorical_features_index_n_classes_map = {}
+
+        if encoder_post_norm not in (None, "batchnorm"):
+            raise ValueError(f"Unsupported encoder_post_norm: {encoder_post_norm}")
 
         hidden_dim = _as_hidden_dims(hidden_dim, n_layers)
 
@@ -666,8 +709,11 @@ class MyMLP(nn.Module):
             emb_dim=emb_dim,
             numeric_features_indexes=numeric_features_indexes,
             categorical_features_index_n_classes_map=categorical_features_index_n_classes_map,
-            num_emb_hidden=num_emb_hidden,
+            emb_num_hidden=emb_num_hidden,
+            emb_num_hidden_ratio=emb_num_hidden_ratio,
+            emb_num_batch_norm=emb_num_batch_norm,
             post_activation=encoder_post_activation,
+            post_batch_norm=encoder_post_norm == "batchnorm",
         )
 
         # emb_dim=None -> passthrough encoder (raw values); effective dim is 1.
@@ -675,7 +721,7 @@ class MyMLP(nn.Module):
         self.n_nodes = n_nodes
 
         mlp_hidden_dims = [n_nodes * self.emb_dim] + hidden_dim + [n_classes]
-        self.mlp = MLP(mlp_hidden_dims, dropout)
+        self.mlp = MLP(dims=mlp_hidden_dims, dropout=dropout, batch_norm=batch_norm)
 
     def forward(self, x, edge_index=None, batch=None):
         if batch is not None:

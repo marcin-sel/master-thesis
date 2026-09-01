@@ -12,6 +12,30 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from mlflow.tracking import MlflowClient
 
 from my_project.training.training import train_gnn
+from my_project.training.training_helpers import resolve_artifact_location
+
+_GRAPH_TAG_KEYS = {"graph_nodes", "graph_edges", "graph_node_permutation"}
+
+
+def _graph_log_metadata(graph):
+    """Return deterministic JSON tags for the exact graph used by a fold."""
+    nodes = list(graph.nodes())
+    node_positions = {node: index for index, node in enumerate(nodes)}
+    edges = [
+        [u, v] if node_positions[u] <= node_positions[v] else [v, u]
+        for u, v in graph.edges()
+    ]
+    edges.sort(key=lambda edge: (node_positions[edge[0]], node_positions[edge[1]]))
+    metadata = {
+        "graph_nodes": json.dumps(nodes, default=str),
+        "graph_edges": json.dumps(edges, default=str),
+    }
+    node_permutation = graph.graph.get("node_permutation")
+    if node_permutation is not None:
+        metadata["graph_node_permutation"] = json.dumps(
+            node_permutation, sort_keys=True, default=str
+        )
+    return metadata
 
 
 def _parse_spec(spec):
@@ -219,10 +243,21 @@ def objective(
     tracking_uri = logger_kwargs.get("tracking_uri")
 
     settings_tags = technical_settings.get("tags", {})
+    # Encode the edge criterion so runs for different thresholds / n_edges of the
+    # same graph get distinct names instead of colliding (only the tag differed).
+    threshold = settings_tags.get("threshold")
+    n_edges = settings_tags.get("n_edges")
+    if threshold is not None:
+        edge_part = f"thr{threshold}"
+    elif n_edges is not None:
+        edge_part = f"ne{n_edges}"
+    else:
+        edge_part = None
     run_name_parts = [
         str(settings_tags.get("model_cls") or model_cls.__name__),
         settings_tags.get("conv_layer"),
         settings_tags.get("graph_name"),
+        edge_part,
     ]
     run_name_base = "__".join(str(part) for part in run_name_parts if part)
     trial_run_name = f"{run_name_base}__trial_{trial.number}"
@@ -239,7 +274,10 @@ def objective(
         mlflow_client = MlflowClient(tracking_uri=tracking_uri)
         exp = mlflow_client.get_experiment_by_name(experiment_name)
         if exp is None:
-            experiment_id = mlflow_client.create_experiment(experiment_name)
+            experiment_id = mlflow_client.create_experiment(
+                experiment_name,
+                artifact_location=resolve_artifact_location(tracking_uri),
+            )
         else:
             experiment_id = exp.experiment_id
 
@@ -268,7 +306,8 @@ def objective(
         for key, value in settings_tags.items():
             if value is not None:
                 mlflow_client.set_tag(parent_run_id, key, str(value))
-                mlflow_client.log_param(parent_run_id, key, value)
+                if key not in _GRAPH_TAG_KEYS:
+                    mlflow_client.log_param(parent_run_id, key, value)
 
     try:
         for fold_idx, fold_results in enumerate(cv_folds):
@@ -276,6 +315,7 @@ def objective(
             data_fold = copy.deepcopy(fold_results.get("data"))
             data_fold.keep_on_gpu = technical_settings.get("keep_on_gpu", False)
             data_fold.setup()
+            graph_metadata = _graph_log_metadata(data_fold.graph)
 
             params_fold = params.copy()
             params_fold.update(fold_base_params)
@@ -286,6 +326,7 @@ def objective(
 
             tags = settings_tags.copy()
             tags.update(technical_settings.get("to_log", {}))
+            tags.update(graph_metadata)
             tags["run_type"] = "fold"
             if experiment_name is not None:
                 tags["experiment_name"] = experiment_name
@@ -307,7 +348,9 @@ def objective(
                 extra_params={
                     key: value
                     for key, value in settings_tags.items()
-                    if value is not None and key not in params_fold
+                    if value is not None
+                    and key not in params_fold
+                    and key not in _GRAPH_TAG_KEYS
                 },
                 parent_run_id=parent_run_id,
                 log_params=True,
@@ -333,13 +376,14 @@ def objective(
                 except (AttributeError, ValueError, TypeError):
                     continue
 
-            test_dataloader = data_fold.test_dataloader()
-            if run_test and test_dataloader is not None:
-                trainer.test(
-                    dataloaders=test_dataloader,
-                    ckpt_path="best",
-                    verbose=False,
-                )
+            if run_test:
+                test_dataloader = data_fold.test_dataloader()
+                if test_dataloader is not None:
+                    trainer.test(
+                        dataloaders=test_dataloader,
+                        ckpt_path="best",
+                        verbose=False,
+                    )
 
             for metric_name, metric_value in trainer.callback_metrics.items():
                 try:

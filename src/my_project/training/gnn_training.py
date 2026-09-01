@@ -1,6 +1,7 @@
 """GNN-centric tuning and fixed-fold orchestration helpers."""
 
 import copy
+import json
 
 import networkx as nx
 import optuna
@@ -19,6 +20,47 @@ _extract_graph_permute_seed = training_helpers._extract_graph_permute_seed
 tune_xgboost = xgboost_training.tune_xgboost
 
 
+def _expand_model_configs(
+    model_configs=None, *, model_classes=None, conv_layer=None, search_space=None
+):
+    """Flatten model specs into one entry per (model_cls, conv_layer).
+
+    Accepts either explicit ``model_configs`` (each a dict with ``model_cls``,
+    ``search_space``, ``convs`` and optional ``suggest_params_func``) or the
+    legacy ``model_classes`` + shared ``conv_layer``/``search_space`` trio. Every
+    returned entry carries its own ``search_space``/``conv_layer`` so MLP and GNN
+    can be tuned on different grids in one loop.
+    """
+    if model_configs is not None:
+        expanded = []
+        for cfg in model_configs:
+            for conv in cfg.get("convs", [None]):
+                expanded.append(
+                    {
+                        "model_cls": cfg["model_cls"],
+                        "search_space": cfg["search_space"],
+                        "conv_layer": conv,
+                        "suggest_params_func": cfg.get(
+                            "suggest_params_func", suggest_from_search_space
+                        ),
+                    }
+                )
+        return expanded
+    if model_classes is None or search_space is None:
+        raise ValueError(
+            "Provide either model_configs or (model_classes and search_space)"
+        )
+    return [
+        {
+            "model_cls": model_cls,
+            "search_space": search_space,
+            "conv_layer": None if model_cls is MyMLP else conv_layer,
+            "suggest_params_func": suggest_from_search_space,
+        }
+        for model_cls in model_classes
+    ]
+
+
 def run_gnn_tuning(
     graph,
     graph_name,
@@ -34,7 +76,7 @@ def run_gnn_tuning(
     direction,
     n_trials,
     sampler_seed,
-    standardize=True,
+    standardize=False,
     keep_on_gpu=True,
     n_startup_trials=10,
     conv_layer=None,
@@ -48,6 +90,7 @@ def run_gnn_tuning(
     preprocessing_pipeline=None,
     show_metrics_progress=False,
     pruning_warmup_steps=None,
+    run_test=True,
 ):
     from .run_optuna_study import build_cv_datamodules, run_optuna_study_for_gnn
 
@@ -72,8 +115,17 @@ def run_gnn_tuning(
             f"graphs/folds length mismatch: {len(graphs_per_fold)} graphs for {len(folds)} folds"
         )
 
-    graph_template = graphs_per_fold[0]
-    columns = list(graph_template.nodes())
+    # Keep every column any fold's graph needs (per-fold graphs may differ, e.g.
+    # permuted variants). When preprocessing is active, retain the full raw
+    # frame because transformed graph nodes may depend on source columns with
+    # different names (for example, ``tro`` + ``trot`` -> ``troponin``).
+    # build_cv_datamodules aligns transformed columns to graph nodes per fold.
+    needed_nodes = set().union(*(g.nodes() for g in graphs_per_fold))
+    columns = (
+        list(X_all.columns)
+        if preprocessing_pipeline is not None
+        else [c for c in X_all.columns if c in needed_nodes]
+    )
 
     if preprocessing_pipeline is None and standardize:
         preprocessing_pipeline = Pipeline([("scaler", StandardScaler())]).set_output(
@@ -163,27 +215,14 @@ def run_gnn_tuning(
     pruner = optuna.pruners.PercentilePruner(
         percentile=50, n_startup_trials=n_startup_trials, n_warmup_steps=n_warmup_steps
     )
-    if top_k is not None and main_data_seed is not None and data_seed != main_data_seed:
-        source_name = _study_name_for(main_data_seed)
-        enqueue_params = _top_params_from(source_name, top_k)
-        if enqueue_params is not None:
-            pruner = optuna.pruners.NopPruner()
-        else:
-            print(
-                f"[top-k] brak ukończonych triali w studium głównym "
-                f"{source_name!r}; pełny tuning dla seed={data_seed}"
-            )
-
     # Permuted graphs reuse the best hyperparameters from their source
-    # (non-permuted) graph study instead of a fresh search: enqueue the source's
-    # top-k combos and skip pruning. Requires the source study to have finished
+    # (non-permuted / "real") graph study instead of a fresh search: enqueue the
+    # source's top-k combos and skip pruning. This takes precedence over the
+    # cross-seed ``top_k`` reuse so permuted graphs always source from the real
+    # graph at the same data_seed. Requires the source study to have finished
     # first (guaranteed by the graph ordering in the sweep).
     permute_seed = _extract_graph_permute_seed(graph_name)
-    if (
-        permuted_top_k is not None
-        and permute_seed is not None
-        and enqueue_params is None
-    ):
+    if permuted_top_k is not None and permute_seed is not None:
         source_graph = graph_name[: graph_name.rfind("_permuted_")]
         source_name = _study_name_for(data_seed, graph=source_graph)
         enqueue_params = _top_params_from(source_name, permuted_top_k)
@@ -191,8 +230,24 @@ def run_gnn_tuning(
             pruner = optuna.pruners.NopPruner()
         else:
             print(
-                f"[permuted top-k] brak ukończonych triali w studium źródłowym "
-                f"{source_name!r}; pełny tuning dla {graph_name}"
+                f"[permuted top-k] no completed trials in the source study "
+                f"{source_name!r}; running full tuning for {graph_name}"
+            )
+
+    if (
+        enqueue_params is None
+        and top_k is not None
+        and main_data_seed is not None
+        and data_seed != main_data_seed
+    ):
+        source_name = _study_name_for(main_data_seed)
+        enqueue_params = _top_params_from(source_name, top_k)
+        if enqueue_params is not None:
+            pruner = optuna.pruners.NopPruner()
+        else:
+            print(
+                f"[top-k] no completed trials in the main study "
+                f"{source_name!r}; running full tuning for seed={data_seed}"
             )
 
     ts = copy.deepcopy(technical_settings)
@@ -230,14 +285,25 @@ def run_gnn_tuning(
         enqueue_params=enqueue_params,
         pruning_mode=pruning_mode,
         callbacks=callbacks,
+        run_test=run_test,
     )
 
     best = study.best_trial
+    mean_metrics = best.user_attrs.get("mean_metrics", {})
+    if not run_test:
+        mean_metrics = {
+            name: value
+            for name, value in mean_metrics.items()
+            if not name.startswith(("test/", "mean_test/", "std_test/"))
+        }
     return {
         "model_cls": model_cls.__name__,
         "graph_name": graph_name,
+        "study_name": study_name,
         "best_value": study.best_value,
-        **best.user_attrs.get("mean_metrics", {}),
+        "best_params": best.user_attrs.get("params", dict(best.params)),
+        "best_epochs": best.user_attrs.get("best_epochs", []),
+        **mean_metrics,
     }
 
 
@@ -250,9 +316,11 @@ def run_config(
     experiment_name,
     run_xgb,
     run_mlp,
-    model_classes,
-    conv_layer,
-    search_space,
+    run_gnn=True,
+    model_configs=None,
+    model_classes=None,
+    conv_layer=None,
+    search_space=None,
     technical_settings,
     direction,
     n_trials,
@@ -264,11 +332,18 @@ def run_config(
     n_startup_trials=10,
     top_k=None,
     main_data_seed=None,
+    permuted_top_k=None,
     preprocessing_pipeline=None,
     xgb_search_space=None,
     cv_splits=1,
 ):
-    """Train graph-dependent GNNs over `graphs`, plus optional graph-independent baselines."""
+    """Train graph-dependent GNNs over `graphs`, plus optional graph-independent baselines.
+
+    Models are given as ``model_configs`` (each ``{"model_cls", "search_space",
+    "convs", ["suggest_params_func"]}``) so MLP and GNN can use different grids;
+    the legacy ``model_classes`` + ``conv_layer``/``search_space`` trio is still
+    accepted as a fallback.
+    """
     X_train, X_valid, X_test, y_train, y_valid, y_test = splits
     X_all = pd.concat([X_train, X_valid, X_test])
     y_all = pd.concat([y_train, y_valid, y_test])
@@ -311,37 +386,17 @@ def run_config(
             )
         )
 
-    if run_mlp and MyMLP in model_classes:
-        empty_graph = nx.empty_graph(next(iter(graphs.values())))
-        results.append(
-            run_gnn_tuning(
-                graph=empty_graph,
-                graph_name="empty",
-                model_cls=MyMLP,
-                suggest_params_func=suggest_from_search_space,
-                X_all=X_all,
-                y_all=y_all,
-                folds=folds,
-                optuna_storage=optuna_storage,
-                standardize=standardize,
-                keep_on_gpu=keep_on_gpu,
-                n_startup_trials=n_startup_trials,
-                conv_layer=None,
-                search_space=search_space,
-                technical_settings=technical_settings,
-                direction=direction,
-                n_trials=n_trials,
-                sampler_seed=sampler_seed,
-                experiment_name=experiment_name,
-                extra_tags={**base_tags, "n_features": empty_graph.number_of_nodes()},
-                top_k=top_k,
-                main_data_seed=main_data_seed,
-                preprocessing_pipeline=preprocessing_pipeline,
-            )
-        )
+    expanded_configs = _expand_model_configs(
+        model_configs,
+        model_classes=model_classes,
+        conv_layer=conv_layer,
+        search_space=search_space,
+    )
+    mlp_configs = [c for c in expanded_configs if c["model_cls"] is MyMLP]
+    gnn_configs = [c for c in expanded_configs if c["model_cls"] is not MyMLP]
 
-    gnn_models = [m for m in model_classes if m is not MyMLP]
-    for model_cls in gnn_models:
+    for cfg in gnn_configs if run_gnn else []:
+        model_cls = cfg["model_cls"]
         for graph_name, graph_train in graphs.items():
             stats = edges_info.get(graph_name, {})
             graph_permute_seed = _extract_graph_permute_seed(graph_name)
@@ -356,12 +411,21 @@ def run_config(
                 "graph_true_edges_found": stats.get("true_edges_in_set"),
                 "graph_true_edges_total": stats.get("true_edges_len"),
             }
+            if graph_permute_seed is not None:
+                node_permutation = graph_train.graph.get("node_permutation")
+                if node_permutation is None:
+                    raise ValueError(
+                        f"Permuted graph {graph_name!r} has no node_permutation metadata"
+                    )
+                extra_tags["graph_node_permutation"] = json.dumps(
+                    node_permutation, sort_keys=True
+                )
             results.append(
                 run_gnn_tuning(
                     graph=graph_train,
                     graph_name=graph_name,
                     model_cls=model_cls,
-                    suggest_params_func=suggest_from_search_space,
+                    suggest_params_func=cfg["suggest_params_func"],
                     X_all=X_all,
                     y_all=y_all,
                     folds=folds,
@@ -369,14 +433,49 @@ def run_config(
                     standardize=standardize,
                     keep_on_gpu=keep_on_gpu,
                     n_startup_trials=n_startup_trials,
-                    conv_layer=conv_layer,
-                    search_space=search_space,
+                    conv_layer=cfg["conv_layer"],
+                    search_space=cfg["search_space"],
                     technical_settings=technical_settings,
                     direction=direction,
                     n_trials=n_trials,
                     sampler_seed=sampler_seed,
                     experiment_name=experiment_name,
                     extra_tags=extra_tags,
+                    top_k=top_k,
+                    main_data_seed=main_data_seed,
+                    permuted_top_k=permuted_top_k,
+                    preprocessing_pipeline=preprocessing_pipeline,
+                )
+            )
+
+    # MLP last so the sweep ends with the graph-independent baseline.
+    if run_mlp and mlp_configs:
+        empty_graph = nx.empty_graph(next(iter(graphs.values())))
+        for cfg in mlp_configs:
+            results.append(
+                run_gnn_tuning(
+                    graph=empty_graph,
+                    graph_name="empty",
+                    model_cls=cfg["model_cls"],
+                    suggest_params_func=cfg["suggest_params_func"],
+                    X_all=X_all,
+                    y_all=y_all,
+                    folds=folds,
+                    optuna_storage=optuna_storage,
+                    standardize=standardize,
+                    keep_on_gpu=keep_on_gpu,
+                    n_startup_trials=n_startup_trials,
+                    conv_layer=cfg["conv_layer"],
+                    search_space=cfg["search_space"],
+                    technical_settings=technical_settings,
+                    direction=direction,
+                    n_trials=n_trials,
+                    sampler_seed=sampler_seed,
+                    experiment_name=experiment_name,
+                    extra_tags={
+                        **base_tags,
+                        "n_features": empty_graph.number_of_nodes(),
+                    },
                     top_k=top_k,
                     main_data_seed=main_data_seed,
                     preprocessing_pipeline=preprocessing_pipeline,
@@ -414,35 +513,17 @@ def run_fixed_folds_sweep(
     permuted_top_k=None,
     preprocessing_pipeline=None,
     pruning_warmup_steps=None,
+    run_test=True,
 ):
     """Run tuning on a fixed set of precomputed folds and per-fold graphs."""
     results = []
 
-    if model_configs is not None:
-        expanded_configs = []
-        for cfg in model_configs:
-            convs = cfg.get("convs", [None])
-            for conv in convs:
-                expanded_configs.append(
-                    {
-                        "model_cls": cfg["model_cls"],
-                        "search_space": cfg["search_space"],
-                        "conv_layer": conv,
-                    }
-                )
-    else:
-        if model_classes is None or search_space is None:
-            raise ValueError(
-                "Provide either model_configs or (model_classes and search_space)"
-            )
-        expanded_configs = [
-            {
-                "model_cls": model_cls,
-                "search_space": search_space,
-                "conv_layer": None if model_cls is MyMLP else conv_layer,
-            }
-            for model_cls in model_classes
-        ]
+    expanded_configs = _expand_model_configs(
+        model_configs,
+        model_classes=model_classes,
+        conv_layer=conv_layer,
+        search_space=search_space,
+    )
 
     mlp_configs = [cfg for cfg in expanded_configs if cfg["model_cls"] is MyMLP]
     gnn_configs = [cfg for cfg in expanded_configs if cfg["model_cls"] is not MyMLP]
@@ -455,6 +536,13 @@ def run_fixed_folds_sweep(
                 else graph_folds
             )
             graph_permute_seed = _extract_graph_permute_seed(graph_name)
+            extra_tags = {
+                **base_tags,
+                "n_features": first_graph.number_of_nodes(),
+                "graph_n_edges": first_graph.number_of_edges(),
+                "is_permuted": graph_permute_seed is not None,
+                "graph_permute_seed": graph_permute_seed,
+            }
             results.append(
                 run_gnn_tuning(
                     graph=graph_folds,
@@ -476,18 +564,13 @@ def run_fixed_folds_sweep(
                     pruning_mode=pruning_mode,
                     conv_layer=cfg["conv_layer"],
                     experiment_name=experiment_name,
-                    extra_tags={
-                        **base_tags,
-                        "n_features": first_graph.number_of_nodes(),
-                        "graph_n_edges": first_graph.number_of_edges(),
-                        "is_permuted": graph_permute_seed is not None,
-                        "graph_permute_seed": graph_permute_seed,
-                    },
+                    extra_tags=extra_tags,
                     top_k=top_k,
                     main_data_seed=main_data_seed,
                     permuted_top_k=permuted_top_k,
                     preprocessing_pipeline=preprocessing_pipeline,
                     pruning_warmup_steps=pruning_warmup_steps,
+                    run_test=run_test,
                 )
             )
 
@@ -531,6 +614,7 @@ def run_fixed_folds_sweep(
                 main_data_seed=main_data_seed,
                 preprocessing_pipeline=preprocessing_pipeline,
                 pruning_warmup_steps=pruning_warmup_steps,
+                run_test=run_test,
             )
         )
 

@@ -13,8 +13,6 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-import numpy as np
-
 from my_project.data.generate_synthetic_data import (
     generate_f_data,
     generate_xor_with_main_effects,
@@ -22,75 +20,31 @@ from my_project.data.generate_synthetic_data import (
 from my_project.data.generate_synthetic_data_pairwise_interaction import (
     generate_pairwise_interaction_data,
 )
+
+# Ground-truth interaction primitives live in ``interactions``; re-exported here
+# so existing ``from my_project.data.generators import ...`` call sites keep working.
+from my_project.data.interactions import (  # noqa: F401
+    DEFAULT_INTERACTIONS,
+    INTERACTION_MOMENTS,
+    PRETTY_NAMES,
+    interaction_label_map,
+    interactions_name_map,
+    log_of_sum_of_abs_plus_one,
+    lookup_interaction_moment,
+    multiplication,
+    or_xor,
+    pretty_interaction_name,
+    quadratic_magnitude_interaction,
+    sign_times_another,
+    similarity_interaction,
+    sin_of_sum,
+    sinusoidal_interaction,
+    xor,
+)
 from my_project.data.load_breast_cancer import generate_breast_cancer_data
 from my_project.data.load_higgs import generate_higgs_data
 from my_project.data.load_madelon import generate_madelon_data
 from my_project.data.load_medical import generate_medical_data
-
-
-# --- Ground-truth pairwise interaction functions --------------------------
-def sign_times_another(a, b):
-    return b if a > 0 else -b
-
-
-def multiplication(a, b):
-    return a * b
-
-
-def xor(a, b):
-    return int(a > 0) ^ int(b > 0)
-
-
-def log_of_sum_of_abs_plus_one(a, b):
-    return np.log(np.abs(a) + np.abs(b) + 1.0)
-
-
-def sin_of_sum(a, b):
-    return np.sin(np.pi * (a + b))
-
-
-def sinusoidal_interaction(a, b):
-    return np.sin(np.pi * a) * np.sin(np.pi * b)
-
-
-def or_xor(a, b, c, d):
-    return int(xor(int(a > 0), int(b > 0)) | xor(int(c > 0), int(d > 0)))
-
-
-def quadratic_magnitude_interaction(a, b):
-    return (a**2 - 1.0) * (b**2 - 1.0)
-
-
-def similarity_interaction(a, b, sigma=1.0):
-    return np.exp(-0.5 * ((a - b) / sigma) ** 2)
-
-
-# Default pairwise interactions: every informative feature takes part in
-# exactly one interaction (mirrors the notebook's active `pairwise` config).
-DEFAULT_INTERACTIONS = {
-    ("x1", "x2"): sign_times_another,
-    ("x3", "x4"): multiplication,
-    ("x5", "x6"): sinusoidal_interaction,
-    ("x6", "x7"): xor,
-    ("x6", "x8"): quadratic_magnitude_interaction,
-    ("x7", "x8"): similarity_interaction,
-}
-
-
-# Human-readable (math-form) labels for each ground-truth interaction function,
-# used for plot/table axis labels instead of the raw ``__name__``.
-PRETTY_NAMES: dict[str, str] = {
-    "sign_times_another": "sgn(a)\u00b7b",
-    "multiplication": "a\u00b7b",
-    "sinusoidal_interaction": "sin(\u03c0a)\u00b7sin(\u03c0b)",
-    "xor": "\U0001d7d9(a>0)\u2295\U0001d7d9(b>0)",
-    "quadratic_magnitude_interaction": "(a\u00b2\u22121)(b\u00b2\u22121)",
-    "similarity_interaction": "exp(\u2212\u00bd(a\u2212b)\u00b2)",
-    "log_of_sum_of_abs_plus_one": "log(|a|+|b|+1)",
-    "sin_of_sum": "sin(\u03c0(a+b))",
-    "or_xor": "(\U0001d7d9(a>0)\u2295\U0001d7d9(b>0))\u2228(\U0001d7d9(c>0)\u2295\U0001d7d9(d>0))",
-}
-
 
 # Map each generator kind to its callable; kind-specific static arguments live
 # in the config's ``generator_kwargs``.
@@ -117,25 +71,6 @@ def build_generator(kind: str, static_kwargs: dict[str, Any]) -> Callable[..., A
         return generator(**{**static_kwargs, **kwargs})
 
     return generate
-
-
-def interactions_name_map(interactions: dict) -> dict:
-    """Readable ``{pair: function_name}`` map for MLflow tags / logging."""
-    return {
-        pair: getattr(func, "__name__", str(func))
-        for pair, func in interactions.items()
-    }
-
-
-def pretty_interaction_name(func) -> str:
-    """Math-form label for one interaction function (falls back to ``__name__``)."""
-    name = getattr(func, "__name__", str(func))
-    return PRETTY_NAMES.get(name, name)
-
-
-def interaction_label_map(interactions: dict) -> dict:
-    """Readable ``{pair: math-form label}`` map for plot/table axis labels."""
-    return {pair: pretty_interaction_name(func) for pair, func in interactions.items()}
 
 
 def compute_config_hash(

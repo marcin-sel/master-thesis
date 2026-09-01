@@ -16,7 +16,10 @@ from mlflow.tracking import MlflowClient
 from mlflow.utils.mlflow_tags import MLFLOW_PARENT_RUN_ID
 
 from my_project.gnn.trainer import GNNLightningModule
-from my_project.training.training_helpers import resolve_artifact_location
+from my_project.training.training_helpers import (
+    resolve_artifact_location,
+    resolve_checkpoint_root,
+)
 
 
 class EpochMLFlowLogger(MLFlowLogger):
@@ -213,6 +216,13 @@ def train_gnn(
 
         if fold_id is not None:
             checkpoint_dir = f"{checkpoint_dir}/fold_{fold_id}"
+    elif "default_root_dir" not in trainer_kwargs:
+        # No explicit checkpoint dir: keep Lightning's per-run subdir layout but
+        # anchor its root away from the CWD (e.g. the notebook dir) so ckpts
+        # don't leak into it via default_root_dir.
+        trainer_kwargs["default_root_dir"] = resolve_checkpoint_root(
+            logger_kwargs.get("tracking_uri")
+        )
 
     batch_size = params.get("batch_size", None)
     if batch_size is not None:

@@ -1,16 +1,17 @@
-"""Spójny eksport rycin i tabel do LaTeX-a (na potrzeby pracy).
+"""Consistent export of figures and tables to LaTeX (for the thesis).
 
-Wszystkie notebooki używają tej samej konwencji:
+All notebooks use the same convention:
 
-- ryciny -> ``$RESULTS_LATEX_DIR/plots/<slug>.pdf``,
-- tabele -> ``$RESULTS_LATEX_DIR/tables/<slug>.tex`` (sam ``tabular``, bez float
-  ``table``/caption/label — plik wstawiasz przez ``\\input`` we własnym
-  środowisku ``table``),
+- figures -> ``$RESULTS_LATEX_DIR/plots/<slug>.pdf``,
+- tables -> ``$RESULTS_LATEX_DIR/tables/<slug>.tex`` (just the ``tabular``,
+  without a float ``table``/caption/label — you insert the file via ``\\input``
+  inside your own ``table`` environment),
 
-gdzie ``<slug>`` powstaje z nazwy przez :func:`slugify`. Katalog bazowy czytany
-jest z zmiennej środowiskowej ``RESULTS_LATEX_DIR`` (ustaw w ``.env`` i wywołaj
-``dotenv.load_dotenv()`` w notebooku); można go nadpisać argumentem ``base_dir``.
-Gdy katalog nie jest ustawiony, funkcje wypisują ostrzeżenie i nic nie zapisują.
+where ``<slug>`` is derived from the name via :func:`slugify`. The base
+directory is read from the ``RESULTS_LATEX_DIR`` environment variable (set it in
+``.env`` and call ``dotenv.load_dotenv()`` in the notebook); it can be overridden
+with the ``base_dir`` argument. When the directory is not set, the functions
+print a warning and write nothing.
 """
 
 from __future__ import annotations
@@ -136,16 +137,6 @@ def save_table(
     )
     print(f"Saved {out_path}")
     return out_path
-
-
-def format_latex_bold_best(summary_table, *, rank_col=("mean rank", "", "")):
-    """Format a (mean/std/rank) summary table into LaTeX-ready strings.
-
-    Within each config column the best ``mean`` is bolded (``\\textbf``); per-config
-    ranks are integers, the overall ``rank_col`` shows 2 decimals, and all
-    index/column labels are LaTeX-escaped (e.g. ``_`` in ``ii_permuted``). Expects
-    the column MultiIndex whose last level is the stat name (``mean``/``std``/``rank``).
-    """
 
 
 def format_latex_bold_best(summary_table, *, rank_col=("mean rank", "", "")):

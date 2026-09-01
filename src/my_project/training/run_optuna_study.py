@@ -152,6 +152,31 @@ def build_cv_datamodules(
         else:
             fold_graph = fold_graphs[fold_index]
 
+        # build_graph_dataset reindexes each sample to list(graph.nodes), so the
+        # column order the model sees is the graph's node order. Align X here so
+        # cat_map / n_nodes are computed in that same order (otherwise the
+        # encoder applies categorical embeddings to the wrong nodes).
+        graph_node_order = list(fold_graph.nodes())
+        model_columns = list(X_train.columns)
+        if len(graph_node_order) != len(set(graph_node_order)):
+            raise ValueError(f"Fold {fold_index}: graph contains duplicate node names.")
+        if len(model_columns) != len(set(model_columns)):
+            raise ValueError(
+                f"Fold {fold_index}: preprocessing produced duplicate feature names."
+            )
+        missing_nodes = sorted(set(graph_node_order) - set(model_columns))
+        extra_columns = sorted(set(model_columns) - set(graph_node_order))
+        if missing_nodes or extra_columns:
+            raise ValueError(
+                f"Fold {fold_index}: graph nodes and preprocessed model features "
+                f"do not match; missing model columns={missing_nodes}, "
+                f"features absent from graph={extra_columns}."
+            )
+        X_train = X_train[graph_node_order]
+        X_valid = X_valid[graph_node_order]
+        if X_test is not None:
+            X_test = X_test[graph_node_order]
+
         columns = list(X_train.columns)
 
         if categorical_features:

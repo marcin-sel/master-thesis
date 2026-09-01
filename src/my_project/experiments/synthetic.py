@@ -1,49 +1,127 @@
-"""Pipelines and Optuna search space for the SYNTHETIC sweep notebook.
+"""Pipelines and shared Optuna search spaces for the SYNTHETIC sweep notebook.
 
 Used by ``notebooks/gnn/synthetic_data_clean.ipynb`` (higgs / pairwise / xor / f
-/ madelon / breast_cancer). Split out from ``my_project.gnn.search_space`` so the
-synthetic sweep can be tuned independently of the medical experiment. The grid is
-an own literal copy (currently identical to the medical one).
-
-``run_sweep`` feeds ``SEARCH_SPACE`` to both the MLP and GNN configs, so this is
-a single grid (the former ``BASE_SEARCH_SPACE``).
+/ madelon / breast_cancer). Search spaces come from
+``my_project.experiments.search_space`` and are shared with the medical experiment.
 """
 
 from __future__ import annotations
 
-# Synthetic datasets are generated in-memory and already numeric/binary, so no
-# sklearn preprocessing/graph pipeline is applied (``run_sweep`` bins via
-# ``n_bins``). Kept explicit for symmetry with the medical experiment and so a
-# pipeline can be added later without changing the call site.
-PREPROCESSING_PIPELINE = None
-GRAPH_PREPROCESSING_PIPELINE = None
+from sklearn.compose import ColumnTransformer, make_column_selector
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import (
+    FunctionTransformer,
+    KBinsDiscretizer,
+    OrdinalEncoder,
+    PowerTransformer,
+    StandardScaler,
+)
 
-SEARCH_SPACE = {
-    "emb_dim": {"type": "int", "values": [4, 16], "step": 4},
-    "hidden_dim": {"type": "int", "values": [8, 48], "step": 4},
-    "n_layers": {"type": "int", "values": [1, 3]},
-    "dropout": {"type": "float", "values": [0.0, 0.4]},
-    "lr": {"type": "float", "values": [1e-3, 1e-2], "log": True},
-    "weight_decay": {"type": "float", "values": [1e-6, 1e-2], "log": True},
-    "batch_size": {"type": "categorical", "values": [256, 512, 1024]},
-    "encoder_post_norm": {"type": "categorical", "values": ["batchnorm"]},
-}
+from my_project.data.pipelines import shift_to_non_negative
+from my_project.experiments.search_space import (
+    GNN_SEARCH_SPACE,
+    MLP_SEARCH_SPACE,
+    XGB_SEARCH_SPACE,
+)
 
-# XGBoost baseline grid (passed to run_sweep as xgb_search_space). Own literal
-# copy so it can diverge from the medical one.
-XGB_SEARCH_SPACE = {
-    "learning_rate": {"type": "float", "values": [1e-3, 0.2], "log": True},
-    "max_depth": {"type": "int", "values": [2, 8]},
-    "min_child_weight": {"type": "int", "values": [1, 10]},
-    "subsample": {"type": "float", "values": [0.5, 1.0]},
-    "colsample_bytree": {"type": "float", "values": [0.5, 1.0]},
-    "reg_alpha": {"type": "float", "values": [1e-3, 20.0], "log": True},
-    "reg_lambda": {"type": "float", "values": [1e-3, 20.0], "log": True},
-}
+
+def _to_ordered_category(data):
+    # ordered so downstream feature_n_classes (Series.max on the codes) doesn't
+    # raise on an unordered Categorical.
+    return data.apply(lambda column: column.astype("category").cat.as_ordered())
+
+
+_HIGGS_SKEWED_VARS = [
+    "lepton_pt",
+    "missing_energy_magnitude",
+    "jet1_pt",
+    "jet2_pt",
+    "jet3_pt",
+    "jet4_pt",
+]
+_HIGGS_CATEGORICAL_VARS = [
+    "jet1_btag",
+    "jet2_btag",
+    "jet3_btag",
+    "jet4_btag",
+]
+
+higgs_pipeline = Pipeline(
+    [
+        (
+            "selector",
+            ColumnTransformer(
+                transformers=[
+                    (
+                        "skewed",
+                        PowerTransformer(method="yeo-johnson", standardize=True),
+                        _HIGGS_SKEWED_VARS,
+                    ),
+                    (
+                        "categorical",
+                        Pipeline(
+                            [
+                                (
+                                    "ordinal_encoder",
+                                    OrdinalEncoder(
+                                        handle_unknown="use_encoded_value",
+                                        unknown_value=-1,
+                                    ),
+                                ),
+                                (
+                                    "shift_to_non_negative",
+                                    FunctionTransformer(shift_to_non_negative),
+                                ),
+                                (
+                                    "to_category_dtype",
+                                    FunctionTransformer(_to_ordered_category),
+                                ),
+                            ]
+                        ),
+                        _HIGGS_CATEGORICAL_VARS,
+                    ),
+                ],
+                # Non-skewed columns get standardized; keep original feature names so
+                # graph nodes / true edges stay aligned with the model's columns.
+                remainder=StandardScaler(),
+                verbose_feature_names_out=False,
+            ),
+        ),
+    ]
+).set_output(transform="pandas")
+
+higgs_pipeline_discretized = Pipeline(
+    [
+        ("higgs_pipeline", higgs_pipeline),
+        # Bin only the continuous features (ordinal, not the default one-hot). The
+        # b-tag flags are already discrete (3 native levels), so pass them through
+        # instead of re-binning them into fewer quantile bins.
+        (
+            "discretizer",
+            ColumnTransformer(
+                [
+                    (
+                        "num",
+                        KBinsDiscretizer(
+                            n_bins=5,
+                            encode="ordinal",
+                            strategy="quantile",
+                            quantile_method="averaged_inverted_cdf",
+                        ),
+                        make_column_selector(dtype_include="number"),
+                    )
+                ],
+                remainder="passthrough",
+                verbose_feature_names_out=False,
+            ),
+        ),
+    ]
+).set_output(transform="pandas")
 
 __all__ = [
-    "PREPROCESSING_PIPELINE",
-    "GRAPH_PREPROCESSING_PIPELINE",
-    "SEARCH_SPACE",
+    "GNN_SEARCH_SPACE",
+    "MLP_SEARCH_SPACE",
     "XGB_SEARCH_SPACE",
+    "higgs_pipeline",
+    "higgs_pipeline_discretized",
 ]

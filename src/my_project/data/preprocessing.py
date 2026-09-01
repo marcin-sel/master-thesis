@@ -116,19 +116,39 @@ class RareCategoryTransformer(BaseEstimator, TransformerMixin):
         Value to substitute for rare categories (default: NaN).
     include_nan : bool
         Whether to include NaN when computing frequencies.
+    preserve_values : iterable or None
+        Values that must not be replaced even when they are infrequent.
+    min_group_frequency : float or None
+        If set, use ``replace_with`` only when all rare categories together
+        reach this relative frequency. Otherwise use ``fallback_replace_with``.
+    fallback_replace_with : scalar
+        Replacement used when the combined rare-category frequency is below
+        ``min_group_frequency``.
     """
 
     def __init__(
-        self, min_frequency=0.01, min_count=None, replace_with=np.nan, include_nan=True
+        self,
+        min_frequency=0.01,
+        min_count=None,
+        replace_with=np.nan,
+        include_nan=True,
+        preserve_values=None,
+        min_group_frequency=None,
+        fallback_replace_with=np.nan,
     ):
         self.min_frequency = min_frequency
         self.min_count = min_count
         self.replace_with = replace_with
         self.include_nan = include_nan
+        self.preserve_values = preserve_values
+        self.min_group_frequency = min_group_frequency
+        self.fallback_replace_with = fallback_replace_with
 
     def fit(self, X, y=None):
         X = pd.DataFrame(X)
         self.frequent_categories_ = {}
+        self.rare_frequencies_ = {}
+        self.replacement_values_ = {}
 
         for col in X.columns:
             counts = X[col].value_counts(dropna=not self.include_nan)
@@ -139,7 +159,20 @@ class RareCategoryTransformer(BaseEstimator, TransformerMixin):
             else:
                 mask = counts >= self.min_count
 
-            self.frequent_categories_[col] = set(counts[mask].index)
+            frequent = set(counts[mask].index)
+            if self.preserve_values is not None:
+                frequent.update(self.preserve_values)
+            self.frequent_categories_[col] = frequent
+
+            rare_count = counts[~counts.index.isin(frequent)].sum()
+            rare_frequency = rare_count / counts.sum() if counts.sum() else 0.0
+            self.rare_frequencies_[col] = rare_frequency
+            self.replacement_values_[col] = (
+                self.replace_with
+                if self.min_group_frequency is None
+                or rare_frequency >= self.min_group_frequency
+                else self.fallback_replace_with
+            )
 
         return self
 
@@ -149,7 +182,7 @@ class RareCategoryTransformer(BaseEstimator, TransformerMixin):
         for col in X.columns:
             X[col] = X[col].astype(object)
             mask = ~X[col].isin(self.frequent_categories_[col])
-            X.loc[mask, col] = self.replace_with
+            X.loc[mask, col] = self.replacement_values_[col]
 
         return X
 
@@ -337,6 +370,84 @@ class BooleanMissingEncoder(BaseEstimator, TransformerMixin):
             X[col] = filled.astype(str).astype(self.dtype_)
 
         return X
+
+
+class CategoryColumnMerger(BaseEstimator, TransformerMixin):
+    """Merge two categorical columns into one prefixed categorical feature.
+
+    With ``include_both=False``, the second value is ignored when both columns
+    are present. With ``include_both=True``, both prefixed values are retained
+    in a combined category separated by ``both_separator``.
+    """
+
+    def __init__(
+        self,
+        first_column,
+        second_column,
+        output_column,
+        first_prefix,
+        second_prefix,
+        missing_label="Missing",
+        separator="_",
+        include_both=False,
+        both_separator="__",
+    ):
+        self.first_column = first_column
+        self.second_column = second_column
+        self.output_column = output_column
+        self.first_prefix = first_prefix
+        self.second_prefix = second_prefix
+        self.missing_label = missing_label
+        self.separator = separator
+        self.include_both = include_both
+        self.both_separator = both_separator
+
+    def fit(self, X, y=None):
+        X = pd.DataFrame(X)
+        missing = [
+            col
+            for col in (self.first_column, self.second_column)
+            if col not in X.columns
+        ]
+        if missing:
+            raise ValueError(f"Missing columns: {missing}")
+
+        self.feature_names_in_ = np.asarray(X.columns, dtype=object)
+        return self
+
+    def transform(self, X):
+        X = pd.DataFrame(X).copy()
+        first = X[self.first_column]
+        second = X[self.second_column]
+
+        merged = pd.Series(self.missing_label, index=X.index, dtype=object)
+        first_present = first.notna() & first.ne(self.missing_label)
+        second_present = second.notna() & second.ne(self.missing_label)
+        first_values = self.first_prefix + self.separator + first.astype(str)
+        second_values = self.second_prefix + self.separator + second.astype(str)
+
+        merged.loc[first_present] = first_values.loc[first_present]
+        only_second = second_present & ~first_present
+        merged.loc[only_second] = second_values.loc[only_second]
+
+        if self.include_both:
+            both = first_present & second_present
+            merged.loc[both] = (
+                first_values.loc[both] + self.both_separator + second_values.loc[both]
+            )
+
+        X = X.drop(columns=[self.first_column, self.second_column])
+        X[self.output_column] = merged.astype("category")
+        return X
+
+    def get_feature_names_out(self, input_features=None):
+        features = (
+            np.asarray(input_features, dtype=object)
+            if input_features is not None
+            else self.feature_names_in_
+        )
+        kept = [f for f in features if f not in (self.first_column, self.second_column)]
+        return np.asarray([*kept, self.output_column], dtype=object)
 
 
 import numpy as np

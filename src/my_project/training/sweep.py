@@ -9,22 +9,16 @@ import copy
 
 from sklearn import config_context
 
-from my_project.training import gnn_training, xgboost_training
-
-run_config = gnn_training.run_config
-run_fixed_folds_sweep = gnn_training.run_fixed_folds_sweep
-run_gnn_tuning = gnn_training.run_gnn_tuning
-binary_metrics = xgboost_training.binary_metrics
-run_xgboost_fixed_folds_study = xgboost_training.run_xgboost_fixed_folds_study
-tune_xgboost = xgboost_training.tune_xgboost
-from my_project.data.utils import prepare_data
+from my_project.data.utils import prepare_data_fixed_test
 from my_project.graphs import (
     build_base_graphs,
     build_ii_graphs,
+    build_node_permutation,
     build_true_graph,
     graph_stats,
 )
 from my_project.information_theory import compute_info
+from my_project.training.gnn_training import run_config
 
 
 def build_generator_name(generator_kind, *, generator_kwargs=None, f_function_id=None):
@@ -55,9 +49,10 @@ def run_sweep(
     edge_mode,
     threshold_grid,
     n_edges_grid,
-    model_classes,
-    conv_layer,
-    search_space,
+    model_configs=None,
+    model_classes=None,
+    conv_layer=None,
+    search_space=None,
     technical_settings,
     direction,
     n_trials,
@@ -79,11 +74,18 @@ def run_sweep(
     graph_preprocessing_pipeline=None,
     xgb_search_space=None,
     cv_splits=1,
+    test_seed=99991,
+    permuted_top_k=None,
 ):
     """Full grid sweep over (noise, cov, train_size, data_seed).
 
     The main seed is run first for every (noise, cov, train_size) cell so its
     full study exists before the other seeds reuse its top-k combinations.
+
+    ``test_seed`` is the base for held-out test seeds. Each ``data_seed`` gets
+    its own test seed, while all train sizes for that data seed reuse the same
+    test set. Keep the base nonzero so test and train draws use different seeds
+    (see ``prepare_data_fixed_test``).
     """
     results = []
     # `None` means "no noise sweep": run one pass with zero noise.
@@ -94,14 +96,17 @@ def run_sweep(
             for train_size in train_size_grid:
                 for data_seed in sweep_seeds:
                     n_samples = train_size + test_size + valid_size
-                    true_edges_s, splits = prepare_data(
+                    # Each data seed has its own test set, reused across train sizes.
+                    # Train/valid samples remain independent for every train size.
+                    true_edges_s, splits = prepare_data_fixed_test(
                         generate,
-                        n_samples=n_samples,
+                        train_size=train_size,
                         data_seed=data_seed,
                         test_size=test_size,
                         valid_size=valid_size,
                         noise_level=noise_level,
                         feature_selection=feature_selection,
+                        test_seed=test_seed + data_seed,
                         cov=cov,
                     )
                     X_train_s, y_train_s = splits[0], splits[3]
@@ -117,6 +122,11 @@ def run_sweep(
                         ii_s = compute_info(X_graph_s, y_train_s, n_bins=None)
                     else:
                         ii_s = compute_info(X_train_s, y_train_s, n_bins=n_bins)
+                    reference_columns = list(ii_s.columns)
+                    permutation_mappings = {
+                        seed: build_node_permutation(reference_columns, seed)
+                        for seed in permute_seeds
+                    }
                     graph_true_s = build_true_graph(ii_s, true_edges_s)
 
                     common_tags = {
@@ -150,9 +160,10 @@ def run_sweep(
                     base_info = graph_stats(base_graphs, true_edges_s)
                     print(
                         f"\\n=== data_seed={data_seed} | n_samples={n_samples} "
-                        f"| cov={cov} | noise={noise_level} | base ==="
+                        f"| cov={cov} | noise={noise_level} | xgboost ==="
                     )
 
+                    # XGBoost first (graph-independent baseline).
                     results.extend(
                         run_config(
                             base_graphs,
@@ -161,7 +172,9 @@ def run_sweep(
                             base_tags={**common_tags, "threshold": None},
                             experiment_name=experiment_name,
                             run_xgb=True,
-                            run_mlp=True,
+                            run_mlp=False,
+                            run_gnn=False,
+                            model_configs=model_configs,
                             model_classes=model_classes,
                             conv_layer=conv_layer,
                             search_space=search_space,
@@ -176,6 +189,7 @@ def run_sweep(
                             n_startup_trials=n_startup_trials,
                             top_k=top_k,
                             main_data_seed=main_data_seed,
+                            permuted_top_k=permuted_top_k,
                             preprocessing_pipeline=preprocessing_pipeline,
                             xgb_search_space=xgb_search_space,
                             cv_splits=cv_splits,
@@ -188,12 +202,19 @@ def run_sweep(
                     for edge_value in edge_grid:
                         if edge_mode == "threshold":
                             ii_graphs = build_ii_graphs(
-                                ii_s, permute_seeds, threshold=edge_value, n_bins=n_bins
+                                ii_s,
+                                permute_seeds,
+                                threshold=edge_value,
+                                n_bins=n_bins,
+                                permutation_mappings=permutation_mappings,
                             )
                             edge_tags = {"threshold": edge_value}
                         else:
                             ii_graphs = build_ii_graphs(
-                                ii_s, permute_seeds, n_edges=edge_value
+                                ii_s,
+                                permute_seeds,
+                                n_edges=edge_value,
+                                permutation_mappings=permutation_mappings,
                             )
                             edge_tags = {"n_edges": edge_value}
                         ii_info = graph_stats(ii_graphs, true_edges_s)
@@ -210,6 +231,7 @@ def run_sweep(
                                 experiment_name=experiment_name,
                                 run_xgb=False,
                                 run_mlp=False,
+                                model_configs=model_configs,
                                 model_classes=model_classes,
                                 conv_layer=conv_layer,
                                 search_space=search_space,
@@ -224,20 +246,51 @@ def run_sweep(
                                 n_startup_trials=n_startup_trials,
                                 top_k=top_k,
                                 main_data_seed=main_data_seed,
+                                permuted_top_k=permuted_top_k,
                                 preprocessing_pipeline=preprocessing_pipeline,
                                 cv_splits=cv_splits,
                             )
                         )
+
+                    # Base graphs (fully_connected/empty/oracle) then MLP last.
+                    print(
+                        f"\\n=== data_seed={data_seed} | n_samples={n_samples} "
+                        f"| cov={cov} | noise={noise_level} | base+mlp ==="
+                    )
+                    results.extend(
+                        run_config(
+                            base_graphs,
+                            base_info,
+                            splits,
+                            base_tags={**common_tags, "threshold": None},
+                            experiment_name=experiment_name,
+                            run_xgb=False,
+                            run_mlp=True,
+                            run_gnn=True,
+                            model_configs=model_configs,
+                            model_classes=model_classes,
+                            conv_layer=conv_layer,
+                            search_space=search_space,
+                            technical_settings=technical_settings,
+                            direction=direction,
+                            n_trials=n_trials,
+                            sampler_seed=data_seed,
+                            data_seed=data_seed,
+                            optuna_storage=optuna_storage,
+                            standardize=standardize,
+                            keep_on_gpu=keep_on_gpu,
+                            n_startup_trials=n_startup_trials,
+                            top_k=top_k,
+                            main_data_seed=main_data_seed,
+                            permuted_top_k=permuted_top_k,
+                            preprocessing_pipeline=preprocessing_pipeline,
+                            cv_splits=cv_splits,
+                        )
+                    )
     return results
 
 
 __all__ = [
-    "binary_metrics",
     "build_generator_name",
-    "run_config",
-    "run_fixed_folds_sweep",
-    "run_gnn_tuning",
     "run_sweep",
-    "run_xgboost_fixed_folds_study",
-    "tune_xgboost",
 ]

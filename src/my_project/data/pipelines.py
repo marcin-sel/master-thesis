@@ -1,3 +1,4 @@
+import numpy as np
 from sklearn.compose import ColumnTransformer
 from sklearn.compose import make_column_selector as selector
 from sklearn.impute import SimpleImputer
@@ -13,7 +14,7 @@ from sklearn.preprocessing import (
 from my_project.data.preprocessing import (
     BooleanMissingEncoder,
     HighMissingDiscretizer,
-    QuantileClipper,
+    # QuantileClipper,
     RareCategoryTransformer,
     ThresholdImputer,
 )
@@ -40,7 +41,7 @@ dtypes_dict = {
 numeric_pipeline = Pipeline(
     [
         ("imputer", SimpleImputer(strategy="median")),
-        ("quantile_clipper", QuantileClipper(lower=0.01, upper=0.99)),
+        # ("quantile_clipper", QuantileClipper(lower=0.01, upper=0.99)),
         # ("scaler", StandardScaler()),
         # ("power_transformer", PowerTransformer(method="box-cox", standardize=True)),
         ("power_transformer", PowerTransformer(method="yeo-johnson", standardize=True)),
@@ -51,15 +52,17 @@ numeric_pipeline = Pipeline(
 categorical_pipeline = Pipeline(
     [
         (
-            "threshold_imputer",
-            ThresholdImputer(threshold=0.02, strategy="most_frequent"),
-        ),
-        (
             "rare_category",
             RareCategoryTransformer(
-                min_frequency=0.01, replace_with="OTHER", include_nan=True
+                min_frequency=0.05,
+                replace_with="OTHER",
+                include_nan=True,
+                # preserve_values={"Missing"},
+                min_group_frequency=0.05,
+                fallback_replace_with=np.nan,
             ),
         ),
+        ("imputer", SimpleImputer(strategy="most_frequent")),
     ]
 )
 
