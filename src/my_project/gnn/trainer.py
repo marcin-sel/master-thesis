@@ -6,15 +6,15 @@ import torch
 import torch.nn as nn
 from torchmetrics import MetricCollection
 from torchmetrics.classification import (
-    BinaryAccuracy,
+    # BinaryAccuracy,
     BinaryAUROC,
     BinaryAveragePrecision,
-    BinaryF1Score,
-    BinaryPrecision,
-    BinaryRecall,
-    BinarySpecificity,
 )
 
+# BinaryF1Score,
+# BinaryPrecision,
+# BinaryRecall,
+# BinarySpecificity,
 from my_project.gnn import models as _models
 
 _model_classes = [
@@ -94,15 +94,19 @@ class GNNLightningModule(L.LightningModule):
 
         metric_collection = MetricCollection(
             {
-                "accuracy": BinaryAccuracy(threshold=self.threshold),
+                # "accuracy": BinaryAccuracy(threshold=self.threshold),
                 "auc": BinaryAUROC(),
                 "avg_precision": BinaryAveragePrecision(),
-                "f1": BinaryF1Score(threshold=self.threshold),
-                "precision": BinaryPrecision(threshold=self.threshold, zero_division=0),
-                "recall": BinaryRecall(threshold=self.threshold, zero_division=0),
-                "specificity": BinarySpecificity(
-                    threshold=self.threshold, zero_division=0
-                ),
+                # "f1": BinaryF1Score(threshold=self.threshold),
+                # "precision": BinaryPrecision(
+                #     threshold=self.threshold, zero_division=0
+                # ),
+                # "recall": BinaryRecall(
+                #     threshold=self.threshold, zero_division=0
+                # ),
+                # "specificity": BinarySpecificity(
+                #     threshold=self.threshold, zero_division=0
+                # ),
             }
         )
         self.train_metrics = metric_collection.clone(prefix="train/")
@@ -148,10 +152,10 @@ class GNNLightningModule(L.LightningModule):
 
     def on_validation_epoch_end(self) -> None:
         metrics = self.val_metrics.compute()
-        metrics["val/balanced_acc"] = (
-            metrics["val/recall"] + metrics["val/specificity"]
-        ) / 2
-        metrics.pop("val/specificity")
+        # metrics["val/balanced_acc"] = (
+        #     metrics["val/recall"] + metrics["val/specificity"]
+        # ) / 2
+        # metrics.pop("val/specificity")
         self.log_dict(
             metrics,
             on_step=False,
@@ -166,10 +170,10 @@ class GNNLightningModule(L.LightningModule):
 
     def on_test_epoch_end(self) -> None:
         metrics = self.test_metrics.compute()
-        metrics["test/balanced_acc"] = (
-            metrics["test/recall"] + metrics["test/specificity"]
-        ) / 2
-        metrics.pop("test/specificity")
+        # metrics["test/balanced_acc"] = (
+        #     metrics["test/recall"] + metrics["test/specificity"]
+        # ) / 2
+        # metrics.pop("test/specificity")
         self.log_dict(
             metrics,
             on_step=False,
@@ -179,11 +183,10 @@ class GNNLightningModule(L.LightningModule):
 
     def on_train_epoch_end(self) -> None:
         metrics = self.train_metrics.compute()
-        metrics["train/balanced_acc"] = (
-            metrics["train/recall"] + metrics["train/specificity"]
-        ) / 2
-        metrics.pop("train/specificity")
-
+        # metrics["train/balanced_acc"] = (
+        #     metrics["train/recall"] + metrics["train/specificity"]
+        # ) / 2
+        # metrics.pop("train/specificity")
         self.log_dict(
             metrics,
             on_step=False,
