@@ -1,6 +1,7 @@
 """GNN-centric tuning and fixed-fold orchestration helpers."""
 
 import copy
+import json
 
 import networkx as nx
 import optuna
@@ -410,6 +411,15 @@ def run_config(
                 "graph_true_edges_found": stats.get("true_edges_in_set"),
                 "graph_true_edges_total": stats.get("true_edges_len"),
             }
+            if graph_permute_seed is not None:
+                node_permutation = graph_train.graph.get("node_permutation")
+                if node_permutation is None:
+                    raise ValueError(
+                        f"Permuted graph {graph_name!r} has no node_permutation metadata"
+                    )
+                extra_tags["graph_node_permutation"] = json.dumps(
+                    node_permutation, sort_keys=True
+                )
             results.append(
                 run_gnn_tuning(
                     graph=graph_train,
