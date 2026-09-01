@@ -93,6 +93,11 @@ def plot_ii_graph(
     add_colorbar: bool = True,
     vmin: float | None = None,
     vmax: float | None = None,
+    node_size: str | int = "degree",
+    layout: str = "spring",
+    curved_edges: bool = True,
+    label_fontsize: int = 8,
+    legend_label: str = "II",
 ) -> nx.Graph:
     """Draw the graph of the top-``k`` pairs of ``pair_table``.
 
@@ -111,10 +116,12 @@ def plot_ii_graph(
         graph.add_edge(fi, fj, weight=float(w))
 
     degrees = dict(graph.degree())
-    node_sizes = [60 + 120 * degrees[node] for node in graph.nodes()]
-    node_colors = [
-        "#c9cbd1" if degrees[node] == 0 else "#4c72b0" for node in graph.nodes()
-    ]
+    if node_size == "degree":
+        node_sizes = [60 + 120 * degrees[node] for node in graph.nodes()]
+    else:
+        node_sizes = [node_size for _ in graph.nodes()]
+
+    node_colors = ["#aec7e8" for _ in graph.nodes()]
     edges = list(graph.edges())
     weights = np.array([graph[u][v]["weight"] for u, v in edges])
     edge_widths = (
@@ -122,7 +129,26 @@ def plot_ii_graph(
         if len(weights)
         else []
     )
-    pos = nx.spring_layout(graph, weight="weight", k=1.4, iterations=300, seed=seed)
+    # Node layout. "circular": evenly on a circle (readable for dense graphs,
+    # labels don't overlap). "spring": force-directed only on nodes with edges,
+    # while isolated ones are placed separately in a row at the top.
+    if layout == "circular":
+        pos = nx.circular_layout(graph)
+    else:
+        connected = [node for node, d in degrees.items() if d > 0]
+        isolated = [node for node, d in degrees.items() if d == 0]
+        layout_graph = graph.subgraph(connected) if connected else graph
+        pos = nx.spring_layout(
+            layout_graph,
+            weight="weight",
+            k=4.0 / np.sqrt(max(len(connected), 1)),
+            iterations=600,
+            seed=seed,
+        )
+        if isolated:
+            xs = np.linspace(-1.0, 1.0, len(isolated)) if len(isolated) > 1 else [0.0]
+            for xi, node in zip(xs, isolated):
+                pos[node] = np.array([xi, 1.25])
 
     if ax is None:
         _, ax = plt.subplots(figsize=(13, 11))
@@ -139,6 +165,10 @@ def plot_ii_graph(
         edge_vmin=vmin,
         edge_vmax=vmax,
         alpha=0.85,
+        arrows=True,  # FancyArrowPatch -> supports curved edges
+        arrowstyle="-",  # no arrowheads (undirected graph)
+        # arc (rad>0) separates overlapping edges; rad=0 -> straight segments
+        connectionstyle=f"arc3,rad={0.12 if curved_edges else 0.0}",
     )
     nx.draw_networkx_nodes(
         graph,
@@ -149,7 +179,13 @@ def plot_ii_graph(
         edgecolors="white",
         linewidths=1.0,
     )
-    nx.draw_networkx_labels(graph, pos, ax=ax, font_size=6, font_color="black")
+    nx.draw_networkx_labels(
+        graph,
+        pos,
+        ax=ax,
+        font_size=label_fontsize,
+        font_color="black",
+    )
 
     deg = np.array(list(degrees.values()))
     nonzero = deg[deg > 0]
@@ -157,10 +193,11 @@ def plot_ii_graph(
     ax.text(
         0.01,
         0.01,
-        f"śr. stopień: {deg.mean():.2f} | śr.≠0: {nonzero_mean:.2f} | "
-        f"maks: {int(deg.max()) if len(deg) else 0}",
+        f"średni stopień: {deg.mean():.2f} \n"
+        f"średni niezerowy stopień: {nonzero_mean:.2f} \n"
+        f"maksymalny stopień: {int(deg.max()) if len(deg) else 0}",
         transform=ax.transAxes,
-        fontsize=8,
+        fontsize=label_fontsize,
         va="bottom",
         ha="left",
         bbox=dict(boxstyle="round", fc="white", ec="0.7", alpha=0.8),
@@ -174,9 +211,10 @@ def plot_ii_graph(
         sm = plt.cm.ScalarMappable(cmap=plt.cm.viridis, norm=norm)
         cbar = fig.colorbar(sm, ax=ax, fraction=0.035, pad=0.02)
         # cbar.set_label("II((Xi, Xj), y)")
-        cbar.set_label("II")
+        cbar.set_label(legend_label, fontsize=label_fontsize)
+        cbar.ax.tick_params(labelsize=label_fontsize)
     if title:
-        ax.set_title(title, fontsize=10)
+        ax.set_title(title, fontsize=label_fontsize + 2)
     ax.set_axis_off()
     ax.margins(0.08)
     return graph
