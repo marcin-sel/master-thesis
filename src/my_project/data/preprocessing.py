@@ -339,6 +339,84 @@ class BooleanMissingEncoder(BaseEstimator, TransformerMixin):
         return X
 
 
+class CategoryColumnMerger(BaseEstimator, TransformerMixin):
+    """Merge two categorical columns into one prefixed categorical feature.
+
+    With ``include_both=False``, the second value is ignored when both columns
+    are present. With ``include_both=True``, both prefixed values are retained
+    in a combined category separated by ``both_separator``.
+    """
+
+    def __init__(
+        self,
+        first_column,
+        second_column,
+        output_column,
+        first_prefix,
+        second_prefix,
+        missing_label="Missing",
+        separator="_",
+        include_both=False,
+        both_separator="__",
+    ):
+        self.first_column = first_column
+        self.second_column = second_column
+        self.output_column = output_column
+        self.first_prefix = first_prefix
+        self.second_prefix = second_prefix
+        self.missing_label = missing_label
+        self.separator = separator
+        self.include_both = include_both
+        self.both_separator = both_separator
+
+    def fit(self, X, y=None):
+        X = pd.DataFrame(X)
+        missing = [
+            col
+            for col in (self.first_column, self.second_column)
+            if col not in X.columns
+        ]
+        if missing:
+            raise ValueError(f"Missing columns: {missing}")
+
+        self.feature_names_in_ = np.asarray(X.columns, dtype=object)
+        return self
+
+    def transform(self, X):
+        X = pd.DataFrame(X).copy()
+        first = X[self.first_column]
+        second = X[self.second_column]
+
+        merged = pd.Series(self.missing_label, index=X.index, dtype=object)
+        first_present = first.notna() & first.ne(self.missing_label)
+        second_present = second.notna() & second.ne(self.missing_label)
+        first_values = self.first_prefix + self.separator + first.astype(str)
+        second_values = self.second_prefix + self.separator + second.astype(str)
+
+        merged.loc[first_present] = first_values.loc[first_present]
+        only_second = second_present & ~first_present
+        merged.loc[only_second] = second_values.loc[only_second]
+
+        if self.include_both:
+            both = first_present & second_present
+            merged.loc[both] = (
+                first_values.loc[both] + self.both_separator + second_values.loc[both]
+            )
+
+        X = X.drop(columns=[self.first_column, self.second_column])
+        X[self.output_column] = merged.astype("category")
+        return X
+
+    def get_feature_names_out(self, input_features=None):
+        features = (
+            np.asarray(input_features, dtype=object)
+            if input_features is not None
+            else self.feature_names_in_
+        )
+        kept = [f for f in features if f not in (self.first_column, self.second_column)]
+        return np.asarray([*kept, self.output_column], dtype=object)
+
+
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.utils.validation import check_array, check_is_fitted
