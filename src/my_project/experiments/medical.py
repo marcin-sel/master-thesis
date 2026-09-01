@@ -9,19 +9,74 @@ here does not affect the synthetic experiment.
 
 from __future__ import annotations
 
+from sklearn.pipeline import Pipeline
+
 from my_project.data.pipelines import (
-    discretization_pipeline,
-    preprocessing_pipeline,
-    preprocessing_pipeline_nn,
+    discretizer_transformer,
+    encoder_transformer,
+    high_missing_n_bins,
+    high_missing_threshold,
+    preprocessor_transformer,
+)
+from my_project.data.preprocessing import CategoryColumnMerger, HighMissingDiscretizer
+
+troponin_category_merger = CategoryColumnMerger(
+    first_column="tro",
+    second_column="trot",
+    output_column="troponina",
+    first_prefix="TnI",
+    second_prefix="TnT",
+    include_both=False,
+)
+
+medical_preprocessing_pipeline = Pipeline(
+    [
+        (
+            "high_missing_discretizer",
+            HighMissingDiscretizer(
+                threshold=high_missing_threshold, n_bins=high_missing_n_bins
+            ),
+        ),
+        ("troponin_category_merger", troponin_category_merger),
+        ("preprocessing", preprocessor_transformer),
+    ]
+)
+
+medical_preprocessing_pipeline_nn = Pipeline(
+    [
+        (
+            "high_missing_discretizer",
+            HighMissingDiscretizer(
+                threshold=high_missing_threshold, n_bins=high_missing_n_bins
+            ),
+        ),
+        ("troponin_category_merger", troponin_category_merger),
+        ("preprocessing", preprocessor_transformer),
+        ("encoder", encoder_transformer),
+    ]
+)
+
+medical_discretization_pipeline = Pipeline(
+    [
+        (
+            "high_missing_discretizer",
+            HighMissingDiscretizer(
+                threshold=high_missing_threshold, n_bins=high_missing_n_bins
+            ),
+        ),
+        ("troponin_category_merger", troponin_category_merger),
+        ("preprocessing", preprocessor_transformer),
+        ("discretizer", discretizer_transformer),
+    ]
 )
 
 # --- Pipelines ---------------------------------------------------------------
 # NN input (impute/encode -> ordinal codes for embeddings), XGBoost input
 # (impute/encode, no ordinal shift needed) and graph input (discretize numerics
 # so the interaction matrix sees a discrete representation).
-NN_PREPROCESSING_PIPELINE = preprocessing_pipeline_nn
-XGBOOST_PREPROCESSING_PIPELINE = preprocessing_pipeline
-GRAPH_PREPROCESSING_PIPELINE = discretization_pipeline
+NN_PREPROCESSING_PIPELINE = medical_preprocessing_pipeline_nn
+XGBOOST_PREPROCESSING_PIPELINE = medical_preprocessing_pipeline
+GRAPH_PREPROCESSING_PIPELINE = medical_discretization_pipeline
 
 # --- Search spaces -----------------------------------------------------------
 # GNN uses the full grid; MLP is the same grid (kept separate so it can drop

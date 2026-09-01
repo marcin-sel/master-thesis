@@ -6,7 +6,6 @@ import yaml
 from sklearn import config_context
 from sklearn.preprocessing import OrdinalEncoder
 
-from my_project.data.pipelines import discretization_pipeline
 from my_project.data.utils import load_column_config, select_modeling_features
 
 
@@ -114,7 +113,9 @@ def generate_medical_data(
             y = y.reset_index(drop=True)
 
     if apply_pipeline:
-        pipe = copy.deepcopy(discretization_pipeline)
+        from my_project.experiments.medical import medical_discretization_pipeline
+
+        pipe = copy.deepcopy(medical_discretization_pipeline)
         # The pipeline includes custom transformers (e.g. HighMissingDiscretizer)
         # that don't implement `set_output`, so calling `pipe.set_output(...)`
         # raises. Force pandas output through the global config context instead
