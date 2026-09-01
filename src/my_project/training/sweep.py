@@ -21,6 +21,7 @@ from my_project.data.utils import prepare_data_fixed_test
 from my_project.graphs import (
     build_base_graphs,
     build_ii_graphs,
+    build_node_permutation,
     build_true_graph,
     graph_stats,
 )
@@ -126,6 +127,11 @@ def run_sweep(
                         ii_s = compute_info(X_graph_s, y_train_s, n_bins=None)
                     else:
                         ii_s = compute_info(X_train_s, y_train_s, n_bins=n_bins)
+                    reference_columns = list(ii_s.columns)
+                    permutation_mappings = {
+                        seed: build_node_permutation(reference_columns, seed)
+                        for seed in permute_seeds
+                    }
                     graph_true_s = build_true_graph(ii_s, true_edges_s)
 
                     common_tags = {
@@ -197,12 +203,19 @@ def run_sweep(
                     for edge_value in edge_grid:
                         if edge_mode == "threshold":
                             ii_graphs = build_ii_graphs(
-                                ii_s, permute_seeds, threshold=edge_value, n_bins=n_bins
+                                ii_s,
+                                permute_seeds,
+                                threshold=edge_value,
+                                n_bins=n_bins,
+                                permutation_mappings=permutation_mappings,
                             )
                             edge_tags = {"threshold": edge_value}
                         else:
                             ii_graphs = build_ii_graphs(
-                                ii_s, permute_seeds, n_edges=edge_value
+                                ii_s,
+                                permute_seeds,
+                                n_edges=edge_value,
+                                permutation_mappings=permutation_mappings,
                             )
                             edge_tags = {"n_edges": edge_value}
                         ii_info = graph_stats(ii_graphs, true_edges_s)
