@@ -17,7 +17,7 @@ run_gnn_tuning = gnn_training.run_gnn_tuning
 binary_metrics = xgboost_training.binary_metrics
 run_xgboost_fixed_folds_study = xgboost_training.run_xgboost_fixed_folds_study
 tune_xgboost = xgboost_training.tune_xgboost
-from my_project.data.utils import prepare_data
+from my_project.data.utils import prepare_data_fixed_test
 from my_project.graphs import (
     build_base_graphs,
     build_ii_graphs,
@@ -79,11 +79,17 @@ def run_sweep(
     graph_preprocessing_pipeline=None,
     xgb_search_space=None,
     cv_splits=1,
+    test_seed=99991,
 ):
     """Full grid sweep over (noise, cov, train_size, data_seed).
 
     The main seed is run first for every (noise, cov, train_size) cell so its
     full study exists before the other seeds reuse its top-k combinations.
+
+    ``test_seed`` is the base for held-out test seeds. Each ``data_seed`` gets
+    its own test seed, while all train sizes for that data seed reuse the same
+    test set. Keep the base nonzero so test and train draws use different seeds
+    (see ``prepare_data_fixed_test``).
     """
     results = []
     # `None` means "no noise sweep": run one pass with zero noise.
@@ -94,14 +100,17 @@ def run_sweep(
             for train_size in train_size_grid:
                 for data_seed in sweep_seeds:
                     n_samples = train_size + test_size + valid_size
-                    true_edges_s, splits = prepare_data(
+                    # Each data seed has its own test set, reused across train sizes.
+                    # Train/valid samples remain independent for every train size.
+                    true_edges_s, splits = prepare_data_fixed_test(
                         generate,
-                        n_samples=n_samples,
+                        train_size=train_size,
                         data_seed=data_seed,
                         test_size=test_size,
                         valid_size=valid_size,
                         noise_level=noise_level,
                         feature_selection=feature_selection,
+                        test_seed=test_seed + data_seed,
                         cov=cov,
                     )
                     X_train_s, y_train_s = splits[0], splits[3]
