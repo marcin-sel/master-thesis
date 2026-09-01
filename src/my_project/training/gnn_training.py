@@ -536,6 +536,13 @@ def run_fixed_folds_sweep(
                 else graph_folds
             )
             graph_permute_seed = _extract_graph_permute_seed(graph_name)
+            extra_tags = {
+                **base_tags,
+                "n_features": first_graph.number_of_nodes(),
+                "graph_n_edges": first_graph.number_of_edges(),
+                "is_permuted": graph_permute_seed is not None,
+                "graph_permute_seed": graph_permute_seed,
+            }
             results.append(
                 run_gnn_tuning(
                     graph=graph_folds,
@@ -557,13 +564,7 @@ def run_fixed_folds_sweep(
                     pruning_mode=pruning_mode,
                     conv_layer=cfg["conv_layer"],
                     experiment_name=experiment_name,
-                    extra_tags={
-                        **base_tags,
-                        "n_features": first_graph.number_of_nodes(),
-                        "graph_n_edges": first_graph.number_of_edges(),
-                        "is_permuted": graph_permute_seed is not None,
-                        "graph_permute_seed": graph_permute_seed,
-                    },
+                    extra_tags=extra_tags,
                     top_k=top_k,
                     main_data_seed=main_data_seed,
                     permuted_top_k=permuted_top_k,
