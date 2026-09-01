@@ -220,10 +220,21 @@ def objective(
     tracking_uri = logger_kwargs.get("tracking_uri")
 
     settings_tags = technical_settings.get("tags", {})
+    # Encode the edge criterion so runs for different thresholds / n_edges of the
+    # same graph get distinct names instead of colliding (only the tag differed).
+    threshold = settings_tags.get("threshold")
+    n_edges = settings_tags.get("n_edges")
+    if threshold is not None:
+        edge_part = f"thr{threshold}"
+    elif n_edges is not None:
+        edge_part = f"ne{n_edges}"
+    else:
+        edge_part = None
     run_name_parts = [
         str(settings_tags.get("model_cls") or model_cls.__name__),
         settings_tags.get("conv_layer"),
         settings_tags.get("graph_name"),
+        edge_part,
     ]
     run_name_base = "__".join(str(part) for part in run_name_parts if part)
     trial_run_name = f"{run_name_base}__trial_{trial.number}"
