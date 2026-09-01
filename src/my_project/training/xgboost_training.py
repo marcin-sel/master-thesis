@@ -1,5 +1,6 @@
 """XGBoost baseline tuning helpers used by sweep orchestration."""
 
+import contextlib
 import copy
 import os
 
@@ -137,14 +138,26 @@ def _run_xgboost_folded_study(
         fold_run_ids = []
         fold_best_ns = []
 
-        with mlflow.start_run(run_name=parent_run_name) as parent_run:
-            parent_run_id = parent_run.info.run_id
-            mlflow.set_tags(
-                {**run_tags, "run_type": "parent", "trial_id": trial.number}
-            )
-            mlflow.log_params(loggable_tags)
-            mlflow.log_param("parent_run_name", parent_run_name)
-            mlflow.log_params(params)
+        # With a single fold there is nothing to aggregate, so skip the extra
+        # MLflow parent run and log everything into one run (mirrors the GNN path).
+        single_fold = len(folds) == 1
+        parent_ctx = (
+            contextlib.nullcontext()
+            if single_fold
+            else mlflow.start_run(run_name=parent_run_name)
+        )
+
+        with parent_ctx as parent_run:
+            if single_fold:
+                parent_run_id = None
+            else:
+                parent_run_id = parent_run.info.run_id
+                mlflow.set_tags(
+                    {**run_tags, "run_type": "parent", "trial_id": trial.number}
+                )
+                mlflow.log_params(loggable_tags)
+                mlflow.log_param("parent_run_name", parent_run_name)
+                mlflow.log_params(params)
 
             for fold_idx, fold in enumerate(folds):
                 X_tr, y_tr = X.loc[fold["train"]], y.loc[fold["train"]].astype(int)
@@ -199,9 +212,14 @@ def _run_xgboost_folded_study(
                     y_tr.to_numpy(), model.predict_proba(X_tr)[:, 1], prefix="train"
                 )
 
+                fold_run_name = (
+                    parent_run_name
+                    if single_fold
+                    else f"{parent_run_name}__fold_{fold_idx}"
+                )
                 with mlflow.start_run(
-                    run_name=f"{parent_run_name}__fold_{fold_idx}",
-                    nested=True,
+                    run_name=fold_run_name,
+                    nested=not single_fold,
                 ) as fold_run:
                     mlflow.set_tags(
                         {
@@ -254,6 +272,8 @@ def _run_xgboost_folded_study(
                 metric_mean = float(np.mean(values))
                 metric_std = float(np.std(values))
                 mean_metrics[name] = metric_mean
+                if single_fold:
+                    continue
                 mlflow_client.log_metric(parent_run_id, name, metric_mean)
                 for rid in [parent_run_id, *fold_run_ids]:
                     mlflow_client.log_metric(rid, f"mean_{name}", metric_mean)
@@ -261,12 +281,13 @@ def _run_xgboost_folded_study(
 
             best_n_mean = float(np.mean(fold_best_ns))
             best_n_std = float(np.std(fold_best_ns))
-            mlflow_client.log_metric(
-                parent_run_id, "mean_best_n_estimators", best_n_mean
-            )
-            for rid in [parent_run_id, *fold_run_ids]:
-                mlflow_client.log_metric(rid, "mean_best_n_estimators", best_n_mean)
-                mlflow_client.log_metric(rid, "std_best_n_estimators", best_n_std)
+            if not single_fold:
+                mlflow_client.log_metric(
+                    parent_run_id, "mean_best_n_estimators", best_n_mean
+                )
+                for rid in [parent_run_id, *fold_run_ids]:
+                    mlflow_client.log_metric(rid, "mean_best_n_estimators", best_n_mean)
+                    mlflow_client.log_metric(rid, "std_best_n_estimators", best_n_std)
 
         trial.set_user_attr("mean_metrics", mean_metrics)
         trial.set_user_attr("model_cls", "XGBoost")
