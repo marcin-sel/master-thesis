@@ -75,7 +75,7 @@ def run_gnn_tuning(
     direction,
     n_trials,
     sampler_seed,
-    standardize=True,
+    standardize=False,
     keep_on_gpu=True,
     n_startup_trials=10,
     conv_layer=None,
