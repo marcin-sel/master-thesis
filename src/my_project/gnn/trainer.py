@@ -193,13 +193,16 @@ class GNNLightningModule(L.LightningModule):
         self.train_metrics.reset()
 
     def predict_step(self, batch, batch_idx: int) -> dict:
-        _, probs, labels, _ = self._shared_step(batch)
+        outputs = self(batch.x, batch.edge_index, batch.batch)
+        logits = outputs[:, 1] - outputs[:, 0]
+        probs = torch.softmax(outputs, dim=1)[:, 1]
         preds = (probs >= self.threshold).long()
         return {
             "graph_ids": batch.graph_id.cpu(),
-            "y_true": labels.cpu(),
+            "y_true": batch.y.cpu(),
             "y_pred": preds.cpu(),
             "y_score": probs.cpu(),
+            "logit": logits.cpu(),
         }
 
     def configure_optimizers(self):
