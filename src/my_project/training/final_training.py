@@ -363,6 +363,7 @@ def fit_final_xgboost(
     X: pd.DataFrame,
     y: pd.Series,
     train_index: pd.Index,
+    valid_index: pd.Index,
     test_index: pd.Index,
     source_study_name: str,
     source_trial_number: int,
@@ -373,10 +374,15 @@ def fit_final_xgboost(
     experiment_name: str,
     output_dir: str | os.PathLike[str],
     save_predictions: bool = True,
+    early_stopping_rounds: int = 15,
 ) -> dict[str, Any]:
-    """Refit XGBoost on all development data, then test exactly once."""
-    if train_index.intersection(test_index).size:
-        raise ValueError("Final train and test indices overlap")
+    """Refit XGBoost with fixed validation early stopping, then test once."""
+    if (
+        train_index.intersection(valid_index).size
+        or train_index.intersection(test_index).size
+        or valid_index.intersection(test_index).size
+    ):
+        raise ValueError("Final train, validation, and test indices must be disjoint")
     if best_n_estimators is None:
         raise ValueError("The best XGBoost trial has no CV-selected estimator count")
 
@@ -388,7 +394,7 @@ def fit_final_xgboost(
         experiment_name=experiment_name,
         model_cls="XGBoost",
         graph_name="xgboost_full",
-        final_protocol="train_valid_refit",
+        final_protocol="fixed_validation_weighted_v3",
         predictions_saved=save_predictions,
         source_study_name=source_study_name,
         source_trial_number=source_trial_number,
@@ -408,31 +414,40 @@ def fit_final_xgboost(
         }
     X_train = X.loc[train_index]
     y_train = y.loc[train_index].astype(int)
+    X_valid = X.loc[valid_index]
+    y_valid = y.loc[valid_index].astype(int)
     X_test = X.loc[test_index]
     y_test = y.loc[test_index].astype(int)
     if preprocessing_pipeline is not None:
         pipeline = copy.deepcopy(preprocessing_pipeline)
         with config_context(transform_output="pandas"):
             X_train = pipeline.fit_transform(X_train, y_train)
+            X_valid = pipeline.transform(X_valid)
             X_test = pipeline.transform(X_test)
-    X_train, (X_test,) = _align_xgb_categoricals(X_train, [X_test])
+    X_train, (X_valid, X_test) = _align_xgb_categoricals(X_train, [X_valid, X_test])
 
     params = copy.deepcopy(best_params)
-    params["n_estimators"] = int(best_n_estimators)
+    params.setdefault("n_estimators", int(best_n_estimators))
     params["enable_categorical"] = True
-    params.pop("early_stopping_rounds", None)
+    params["scale_pos_weight"] = float(
+        (y_train == 0).sum() / max((y_train == 1).sum(), 1)
+    )
+    params["early_stopping_rounds"] = int(early_stopping_rounds)
     model = XGBClassifier(**params)
-    model.fit(X_train, y_train, verbose=False)
+    model.fit(X_train, y_train, eval_set=[(X_valid, y_valid)], verbose=False)
     train_score = model.predict_proba(X_train)[:, 1]
+    valid_score = model.predict_proba(X_valid)[:, 1]
     logits = model.predict(X_test, output_margin=True)
     y_score = model.predict_proba(X_test)[:, 1]
     y_pred = (y_score >= 0.5).astype(int)
     metrics = {
-        **binary_metrics(y_train.to_numpy(), train_score, prefix="train_valid"),
+        **binary_metrics(y_train.to_numpy(), train_score, prefix="train"),
+        **binary_metrics(y_valid.to_numpy(), valid_score, prefix="valid"),
         **binary_metrics(y_test.to_numpy(), y_score, prefix="test"),
-        "train_valid/n_samples": len(y_train),
+        "train/n_samples": len(y_train),
+        "valid/n_samples": len(y_valid),
         "test/n_samples": len(y_test),
-        "final/n_estimators": int(best_n_estimators),
+        "final/n_estimators": int(model.best_iteration + 1),
     }
 
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -457,7 +472,7 @@ def fit_final_xgboost(
             "run_type": "final_refit",
             "model_cls": "XGBoost",
             "graph_name": "xgboost_full",
-            "final_protocol": "train_valid_refit",
+            "final_protocol": "fixed_validation_weighted_v3",
             "test_evaluation": "single_final",
             "predictions_saved": save_predictions,
             "source_study_name": source_study_name,
