@@ -142,6 +142,7 @@ def run_gnn_tuning(
         preprocessing_pipeline=preprocessing_pipeline,
         num_workers=0,
         keep_on_gpu=graph_keep_on_gpu,
+        include_test=run_test,
     )
 
     base_params = {}
