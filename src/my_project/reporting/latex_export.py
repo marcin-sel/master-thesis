@@ -16,6 +16,7 @@ print a warning and write nothing.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from pathlib import Path
@@ -136,18 +137,35 @@ def save_table(
         **to_latex_kwargs,
     )
     print(f"Saved {out_path}")
-    return out_path
+    return df, out_path
 
 
-def format_latex_bold_best(summary_table, *, rank_col=("mean rank", "", "")):
+def format_latex_bold_best(
+    summary_table,
+    *,
+    rank_col=("mean rank", "", ""),
+    value_decimals=4,
+    std_scale=1,
+    std_decimals=None,
+):
     """Format a (mean/std/rank) summary table into LaTeX-ready strings.
 
     Within each config the best row (highest ``mean``) is bolded across *all* its
     stats (``mean``, ``std`` and ``rank``); per-config ranks are integers, the
     overall ``rank_col`` shows 2 decimals, and all index/column labels are
-    LaTeX-escaped (e.g. ``_`` in ``ii_permuted``). Expects the column MultiIndex
-    whose last level is the stat name (``mean``/``std``/``rank``).
+    LaTeX-escaped (e.g. ``_`` in ``ii_permuted``). Standard deviations may be
+    scaled and formatted separately. Expects the column MultiIndex whose last
+    level is the stat name (``mean``/``std``/``rank``).
     """
+    std_label = None
+    if std_scale != 1:
+        if std_scale <= 0:
+            raise ValueError("std_scale must be a positive power of 10")
+        scale_exponent = int(round(math.log10(std_scale)))
+        if std_scale != 10**scale_exponent:
+            raise ValueError("std_scale must be a positive power of 10")
+        std_label = rf"std ($\times 10^{{-{scale_exponent}}}$)"
+
     # Best row per config (identified by the mean column) so we can bold the
     # whole winning row, not just its mean cell.
     best_idx_by_config = {}
@@ -167,10 +185,14 @@ def format_latex_bold_best(summary_table, *, rank_col=("mean rank", "", "")):
         if col == rank_col:
             formatted[col] = s.map(lambda v: "" if pd.isna(v) else f"{v:.2f}")
             continue
-        fmt = "{:.0f}" if col[-1] == "rank" else "{:.4f}"
+        statistic = col[-1]
+        decimals = value_decimals if std_decimals is None else std_decimals
+        precision = decimals if statistic == "std" else value_decimals
+        fmt = "{:.0f}" if statistic == "rank" else f"{{:.{precision}f}}"
+        scale = std_scale if statistic == "std" else 1
         best_idx = best_idx_by_config.get(col[:-1])
         formatted[col] = [
-            "" if pd.isna(v) else _bold(fmt.format(v), idx, best_idx)
+            "" if pd.isna(v) else _bold(fmt.format(v * scale), idx, best_idx)
             for idx, v in s.items()
         ]
 
@@ -182,6 +204,14 @@ def format_latex_bold_best(summary_table, *, rank_col=("mean rank", "", "")):
         [tuple(latex_escape(part) for part in col) for col in formatted.columns],
         names=[latex_escape(name) for name in formatted.columns.names],
     )
+    if std_label is not None:
+        formatted.columns = pd.MultiIndex.from_tuples(
+            [
+                (*col[:-1], std_label) if col != rank_col and col[-1] == "std" else col
+                for col in formatted.columns
+            ],
+            names=formatted.columns.names,
+        )
     return formatted
 
 
@@ -315,6 +345,9 @@ def save_latex_table(
     base_dir: str | os.PathLike | None = None,
     rank_col=("mean rank", "", ""),
     group_rules: bool = True,
+    value_decimals: int = 4,
+    std_scale: int = 1,
+    std_decimals: int | None = None,
     **save_kwargs,
 ) -> Path | None:
     """Format (bold best per config) and save a summary table as LaTeX ``tabular``.
@@ -344,7 +377,13 @@ def save_latex_table(
         latex_escape(_pretty_level_label(name)) for name in trimmed.columns.names[:-1]
     ]
 
-    formatted = format_latex_bold_best(trimmed, rank_col=rank_col)
+    formatted = format_latex_bold_best(
+        trimmed,
+        rank_col=rank_col,
+        value_decimals=value_decimals,
+        std_scale=std_scale,
+        std_decimals=std_decimals,
+    )
     export = _labelled_header_frame(
         formatted, rank_col=rank_col, level_labels=level_labels
     )
