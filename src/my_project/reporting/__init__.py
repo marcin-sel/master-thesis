@@ -20,10 +20,28 @@ from my_project.reporting.plotting import (
     plot_ii_graph,
     top_k_edges,
 )
+from my_project.reporting.presentation import (
+    CATEGORICAL_PALETTE,
+    CATEGORY_LABELS_PL,
+    GRAPH_LABELS,
+    PLOT_LABELS_PL,
+    SEQUENTIAL_PALETTE,
+    configure_notebook_plots,
+    graph_display_name,
+    plot_label,
+    uses_edge_count,
+)
 
 __all__ = [
+    "CATEGORICAL_PALETTE",
+    "CATEGORY_LABELS_PL",
+    "GRAPH_LABELS",
+    "PLOT_LABELS_PL",
+    "SEQUENTIAL_PALETTE",
+    "configure_notebook_plots",
     "edge_jaccard_matrix",
     "format_latex_bold_best",
+    "graph_display_name",
     "latex_escape",
     "pair_table_from_matrix",
     "pairwise_ii_mi_table",
@@ -32,10 +50,12 @@ __all__ = [
     "plot_feature_histograms",
     "plot_ii_by_edges",
     "plot_ii_graph",
+    "plot_label",
     "results_latex_dir",
     "save_figure",
     "save_latex_table",
     "save_table",
     "slugify",
     "top_k_edges",
+    "uses_edge_count",
 ]
