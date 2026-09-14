@@ -8,8 +8,8 @@ MODELING_FEATURES = [
     # --- antropometria ---
     "Wzrost",
     "Waga",
-    "bmi",
-    "NumKg",
+    # "bmi",
+    # "NumKg",
     # --- czynniki ryzyka / wywiad ---
     "Cukrzyca",
     "dysglikemiaBin",
@@ -45,7 +45,7 @@ MODELING_FEATURES = [
     "PCI_lub_zaplanowane_CABG",
     "PCI_i/lub_CABG_pilne",
     "HospKlopidogrelNasycajaca",
-    "kontrast",
+    # "kontrast",
     # "dawka",
     "rehabilitacja",
     # --- hospitalizacja ---
@@ -79,7 +79,7 @@ MODELING_FEATURES = [
     "trg",
     "tro",
     "trot",
-    "troponin_ratio",
+    # "troponin_ratio",
     # "TroponinaT",
     "tsh",
     "tt",
@@ -118,10 +118,84 @@ PIESZKO2019_ML_FEATURES = [
     "pt",  # Prothrombin time
     "fib",  # Fibrinogen
     "ldl",  # LDL (Table 1)
-    # "crp",       # C-reactive protein — BRAK w Twoim configs/columns.py
+    "crp",  # C-reactive protein
 ]
 
-MODELING_FEATURES = PIESZKO2019_ML_FEATURES
+PIESZKO2019_COX_FEATURES = [
+    # --- demografia ---
+    "wiek",  # Age
+    # --- pomiary przy przyjęciu ---
+    "EkgHR",  # Heart rate at admission
+    "RRSkurcz",  # Systolic blood pressure
+    "RRRozkurcz",  # Diastolic blood pressure
+    "EkgST",  # Source category for ST-segment elevation
+    "dysglikemiaBin",  # Diabetes or prediabetes
+    # --- markery hematologiczne / zapalne ---
+    "tro",  # TnI component of troponin elevation ratio
+    "trot",  # TnT component of troponin elevation ratio
+    "crp",  # C-reactive protein
+    "nlr",  # Neutrophil to lymphocyte ratio
+    "plr",  # Platelet to lymphocyte ratio
+    "rdw",  # Red cell distribution width
+    "neu",  # Neutrophil count
+    "lymb",  # Lymphocyte count
+    "monob",  # Monocyte count
+    "eosp",  # Eosinophil count
+    "basob",  # Basophil count
+    "plt",  # Platelet count
+    "hgb",  # Hemoglobin
+    "hct",  # Hematocrit
+    "mcv",  # Mean cell volume
+    "mpv",  # Mean platelet volume
+    # --- biochemia / krzepnięcie ---
+    "kr",  # Creatinine
+    "fib",  # Fibrinogen
+    "alt",  # Alanine aminotransferase
+    "ast",  # Aspartate aminotransferase
+    "chol",  # Total cholesterol
+    "ldl",  # Low-density lipoprotein
+    "hdl",  # High-density lipoprotein
+    "trg",  # Triglycerides
+    "k",  # Potassium
+    "na",  # Sodium
+    "ur",  # Urea
+    "pt",  # Prothrombin time
+]
+
+
+COLS_OUT = [
+    "rehabilitacja",
+    "RozpoznanieOZW",
+    "SegmentOZW",
+    "Rozpoznanie_Glowne",
+    "ZatokowyvsInny",
+    "DomTypObjawow",
+    "CABG",
+    "PCI_lub_zaplanowane_CABG",
+    "PCI_i/lub_CABG_pilne",
+    "Koronaroplastyka",
+    "HospKlopidogrelNasycajaca",
+    "PCI",
+    "WywiadCHNS",
+    "WywiadNS",
+    "WywiadNerki",
+    "WywiadRodzinny",
+    "WywiadTObwodowe",
+    "LBBB_RBBB",
+    "EkgRytm",
+    "ast",
+    "alt",
+    "hdl",
+    "chol",
+    "ldl",
+    "trg",
+    "tsh",
+    "ur",
+    "Cukrzyca",
+]
+
+
+MODELING_FEATURES = [c for c in MODELING_FEATURES if c not in COLS_OUT]
 
 
 KEEP_AFTER_CLEANING = MODELING_FEATURES + [TARGET]

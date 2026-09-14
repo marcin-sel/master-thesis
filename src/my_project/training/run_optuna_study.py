@@ -35,6 +35,7 @@ def build_cv_datamodules(
     num_workers: int = 0,
     keep_on_gpu: bool = False,
     device: str | None = None,
+    include_test: bool = True,
 ) -> list[tuple[GNNDataModule, dict[str, Any]]]:
     """Create one GNNDataModule per CV fold after fitting preprocessing on train only.
 
@@ -51,10 +52,9 @@ def build_cv_datamodules(
       model features because both share the same column names.
 
     A fold may optionally carry a ``"test"`` index in addition to ``"train"``
-    and ``"valid"``. When present it is transformed with that fold's own
-    train-fitted preprocessing and attached to the fold's GNNDataModule so a
-    final "test the winner" step can evaluate without touching train/valid.
-    Folds without a ``"test"`` key carry no test set (current default).
+    and ``"valid"``. When present and ``include_test`` is true, it is transformed
+    with that fold's own train-fitted preprocessing and attached to the fold's
+    GNNDataModule. With ``include_test=False``, test rows are not accessed at all.
     """
 
     provided = [
@@ -95,7 +95,7 @@ def build_cv_datamodules(
 
         # A test slice is optional per fold; pull it from the raw frame so it
         # gets this fold's own train-fitted preprocessing below.
-        test_index = fold.get("test")
+        test_index = fold.get("test") if include_test else None
         X_test = X.loc[test_index] if test_index is not None else None
         y_test = y.loc[test_index] if test_index is not None else None
 

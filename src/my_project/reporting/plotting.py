@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import textwrap
 from collections.abc import Sequence
 
 import matplotlib.pyplot as plt
@@ -246,10 +247,16 @@ def plot_feature_histograms(
     *,
     columns: Sequence | None = None,
     n_cols: int = 7,
+    figsize: tuple[float, float] | None = None,
+    subplot_size: tuple[float, float] = (4, 2.6),
+    wspace: float | None = None,
+    hspace: float | None = None,
     bins: int = 40,
     legend_title: str = "y",
     legend_bbox_y: float = -0.05,
     by_columns: bool = False,
+    font_size: float | None = None,
+    title_pad: float = 6.0,
     trim_quantiles: tuple[float, float] | None = None,
     tail_iqr_multiplier: float = 3.0,
 ) -> plt.Figure:
@@ -260,8 +267,15 @@ def plot_feature_histograms(
     legend is placed below the grid. With ``by_columns=True`` panels are filled
     column-first (top-to-bottom) instead of the default row-first order. If
     ``y`` is ``None`` a single unlabelled histogram is drawn per feature and the
-    legend is omitted. ``trim_quantiles`` can limit only tails extending beyond
-    ``tail_iqr_multiplier`` times the IQR without modifying the input data.
+    legend is omitted. ``subplot_size`` controls the width and height of each
+    panel; ``figsize`` overrides the calculated size of the entire figure.
+    ``wspace`` and ``hspace`` control the horizontal and vertical spacing
+    between panels.
+    ``font_size`` sets the title, tick-label, and legend font size, while
+    ``title_pad`` controls the title distance from its axes.
+    ``trim_quantiles`` can limit only tails extending beyond
+    ``tail_iqr_multiplier`` times the IQR; removed observations are reported in
+    the panel title and the input data remain unchanged.
     """
     if trim_quantiles is not None:
         lower_q, upper_q = trim_quantiles
@@ -272,7 +286,8 @@ def plot_feature_histograms(
     n_features = len(cols)
     n_rows = int(np.ceil(n_features / n_cols))
 
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 2.6 * n_rows))
+    figure_size = figsize or (subplot_size[0] * n_cols, subplot_size[1] * n_rows)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figure_size)
     axes = np.atleast_1d(axes)
     axes = axes.ravel(order="F") if by_columns else axes.ravel()
 
@@ -302,10 +317,15 @@ def plot_feature_histograms(
         else:
             ax.hist(plotted_x, bins=bins, histtype="step", density=True)
         # ax.set_xlabel(col, fontsize=8)
+        removed_pct = 1 - len(plotted_x) / len(x) if len(x) else 0
         title = col
-        ax.set_title(title, fontsize=9)
+        ax.set_title(
+            title,
+            fontsize=font_size if font_size is not None else 9,
+            pad=title_pad,
+        )
         ax.yaxis.set_major_formatter(FuncFormatter(_format_decimal_float))
-        ax.tick_params(labelsize=7)
+        ax.tick_params(labelsize=font_size if font_size is not None else 7)
     for ax in axes[n_features:]:
         ax.axis("off")
     if y is not None:
@@ -317,8 +337,12 @@ def plot_feature_histograms(
             loc="lower center",
             bbox_to_anchor=(0.5, legend_bbox_y),
             ncol=len(labels),
+            fontsize=font_size,
+            title_fontsize=font_size,
         )
     fig.tight_layout()
+    if wspace is not None or hspace is not None:
+        fig.subplots_adjust(wspace=wspace, hspace=hspace)
     return fig
 
 
@@ -359,6 +383,10 @@ def plot_category_barplots(
     *,
     columns: Sequence | None = None,
     n_cols: int = 7,
+    figsize: tuple[float, float] | None = None,
+    subplot_size: tuple[float, float] = (4, 2.6),
+    wspace: float | None = None,
+    hspace: float | None = None,
     normalize: bool = True,
     max_categories: int | None = None,
     min_frequency: float | None = None,
@@ -368,6 +396,10 @@ def plot_category_barplots(
     legend_bbox_y: float = -0.05,
     by_columns: bool = False,
     show_values: bool = True,
+    font_size: float | None = None,
+    title_pad: float = 6.0,
+    x_ticks_angle: float = 45,
+    x_tick_wrap_width: int | None = None,
 ) -> plt.Figure:
     """Grid of per-feature bar plots of category frequencies coloured by class.
 
@@ -385,10 +417,16 @@ def plot_category_barplots(
     in descending frequency. Unused panels are hidden and a single shared legend
     is placed below the grid. ``by_columns=True`` fills panels column-first.
     ``show_values=True`` labels non-zero bars as percentages when normalized and
-    as integer counts otherwise.
+    as integer counts otherwise. ``subplot_size`` controls each panel's size,
+    while ``figsize`` overrides the entire figure size. ``wspace`` and
+    ``hspace`` control panel spacing. ``font_size`` controls all text and
+    ``title_pad`` controls the title distance from its axes.
+    ``x_tick_wrap_width`` wraps category labels at word boundaries.
     """
     if min_frequency is not None and not 0 <= min_frequency <= 1:
         raise ValueError("min_frequency must be between 0 and 1.")
+    if x_tick_wrap_width is not None and x_tick_wrap_width < 1:
+        raise ValueError("x_tick_wrap_width must be at least 1.")
 
     cols = list(X.columns if columns is None else columns)
     n_features = len(cols)
@@ -400,7 +438,8 @@ def plot_category_barplots(
         else None
     )
 
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 2.6 * n_rows))
+    figure_size = figsize or (subplot_size[0] * n_cols, subplot_size[1] * n_rows)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figure_size)
     axes = np.atleast_1d(axes)
     axes = axes.ravel(order="F") if by_columns else axes.ravel()
 
@@ -421,6 +460,18 @@ def plot_category_barplots(
                 order, key=lambda c: order_rank.get(str(c).lower(), len(order_rank))
             )
         labels = [str(c) for c in order]
+        if x_tick_wrap_width is not None:
+            labels = [
+                "\n".join(
+                    textwrap.wrap(
+                        label,
+                        width=x_tick_wrap_width,
+                        break_long_words=False,
+                        break_on_hyphens=False,
+                    )
+                )
+                for label in labels
+            ]
         if y is not None:
             classes = sorted(pd.Series(y).unique())
             width = 0.8 / len(classes)
@@ -442,9 +493,14 @@ def plot_category_barplots(
                         else ""
                         for value in heights
                     ]
-                    ax.bar_label(bars, labels=labels_above, padding=2, fontsize=7)
+                    ax.bar_label(
+                        bars,
+                        labels=labels_above,
+                        padding=2,
+                        fontsize=font_size if font_size is not None else 7,
+                    )
             ax.set_xticks(positions + width * (len(classes) - 1) / 2)
-            ax.set_xticklabels(labels, rotation=45, ha="right")
+            ax.set_xticklabels(labels, rotation=x_ticks_angle, ha="right")
         else:
             heights = values.value_counts(normalize=normalize).reindex(order).to_numpy()
             bars = ax.bar(labels, heights)
@@ -455,13 +511,22 @@ def plot_category_barplots(
                     else ""
                     for value in heights
                 ]
-                ax.bar_label(bars, labels=labels_above, padding=2, fontsize=7)
-            ax.tick_params(axis="x", rotation=45)
-        ax.set_title(col, fontsize=9)
-        ax.set_ylabel(ylabel, fontsize=8)
+                ax.bar_label(
+                    bars,
+                    labels=labels_above,
+                    padding=2,
+                    fontsize=font_size if font_size is not None else 7,
+                )
+            ax.tick_params(axis="x", rotation=x_ticks_angle)
+        ax.set_title(
+            col,
+            fontsize=font_size if font_size is not None else 9,
+            pad=title_pad,
+        )
+        ax.set_ylabel(ylabel, fontsize=font_size if font_size is not None else 8)
         if normalize:
             ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0, decimals=0))
-        ax.tick_params(labelsize=7)
+        ax.tick_params(labelsize=font_size if font_size is not None else 7)
         if show_values:
             ax.margins(y=0.15)
     for ax in axes[n_features:]:
@@ -475,8 +540,12 @@ def plot_category_barplots(
             loc="lower center",
             bbox_to_anchor=(0.5, legend_bbox_y),
             ncol=len(labels),
+            fontsize=font_size,
+            title_fontsize=font_size,
         )
     fig.tight_layout()
+    if wspace is not None or hspace is not None:
+        fig.subplots_adjust(wspace=wspace, hspace=hspace)
     return fig
 
 
